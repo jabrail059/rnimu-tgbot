@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Патанатомия</title><link rel="stylesheet" href="/static/styles.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <main class="app">
+    <header><button id="back" hidden aria-label="Назад">←</button><h1>Патанатомия</h1></header>
+    <section id="loading">Проверяем доступ…</section>
+    <section id="paywall" hidden><h2>Нужна подписка</h2><p>Доступ к материалам — 120 ₽ на 30 дней.</p><button id="open-bot">Вернуться в бот для оплаты</button></section>
+    <section id="topics" hidden><p id="subscription"></p><div id="topic-list"></div></section>
+    <article id="article" hidden><h2 id="article-title"></h2><div id="article-content"></div></article>
+    <p id="error" class="error" hidden></p>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

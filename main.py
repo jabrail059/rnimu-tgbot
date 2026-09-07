@@ -7,6 +7,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 from yoomoney import Quickpay
+from aiogram.client.session.aiohttp import AiohttpSession
 
 from app.config import get_settings
 from app.database import Database
@@ -15,7 +16,14 @@ from app.web import create_app
 logging.basicConfig(level=logging.INFO)
 settings = get_settings()
 database = Database(settings.database_path)
-bot = Bot(settings.bot_token)
+session = AiohttpSession(
+    proxy="socks5://127.0.0.1:10808"
+)
+
+bot = Bot(
+    settings.bot_token,
+    session=session
+)
 dp = Dispatcher()
 
 

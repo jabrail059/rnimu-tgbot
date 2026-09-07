@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Pathology bot database backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+Unit=pathology-backup.service
+
+[Install]
+WantedBy=timers.target

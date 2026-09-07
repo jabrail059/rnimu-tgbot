@@ -1,0 +1,26 @@
+[Unit]
+Description=Pathology Telegram bot and Mini App API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pathology
+Group=pathology
+WorkingDirectory=/opt/rnimu-tgbot
+EnvironmentFile=/etc/pathology-bot.env
+ExecStart=/opt/rnimu-tgbot/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/rnimu-tgbot/data
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

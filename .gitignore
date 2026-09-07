@@ -1,2 +1,7 @@
 .env
 __pycache__
+.venv/
+*.py[cod]
+*.db-shm
+*.db-wal
+data/*.db

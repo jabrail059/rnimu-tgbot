@@ -1,0 +1,17 @@
+[Unit]
+Description=Backup Pathology bot SQLite database
+
+[Service]
+Type=oneshot
+User=pathology
+Group=pathology
+EnvironmentFile=/etc/pathology-bot.env
+Environment=DATABASE_BACKUP_DIR=/var/backups/pathology-bot
+Environment=DATABASE_BACKUP_RETENTION_DAYS=14
+ExecStart=/opt/rnimu-tgbot/.venv/bin/python deploy/backup_database.py
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/rnimu-tgbot/data /var/backups/pathology-bot

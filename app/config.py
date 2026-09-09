@@ -24,6 +24,8 @@ class Settings:
     enable_legacy_yoomoney: bool
     yoomoney_wallet: str | None
     yoomoney_notification_secret: str | None
+    admin_user_ids: tuple[int, ...]
+    media_dir: str
 
     @property
     def payment_return_url(self) -> str:
@@ -50,6 +52,12 @@ def get_settings() -> Settings:
     if price <= 0 or days <= 0:
         raise RuntimeError("SUBSCRIPTION_PRICE and SUBSCRIPTION_DAYS must be positive")
     legacy_enabled = os.getenv("ENABLE_LEGACY_YOOMONEY", "false").lower() == "true"
+    raw_admins = os.getenv("ADMIN_USER_IDS", "").strip()
+    try:
+        admin_user_ids = tuple(int(x.strip()) for x in raw_admins.split(",") if x.strip())
+    except ValueError as exc:
+        raise RuntimeError("ADMIN_USER_IDS must be comma-separated integer Telegram user IDs") from exc
+    media_dir = os.getenv("MEDIA_DIR", "data/media").strip() or "data/media"
     legacy_wallet = os.getenv("YOOMONEY_WALLET", "").strip() or None
     legacy_secret = os.getenv("YOOMONEY_NOTIFICATION_SECRET", "").strip() or None
     if legacy_enabled and (not legacy_wallet or not legacy_secret):
@@ -64,4 +72,6 @@ def get_settings() -> Settings:
         trust_proxy_headers=os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true",
         enable_legacy_yoomoney=legacy_enabled, yoomoney_wallet=legacy_wallet,
         yoomoney_notification_secret=legacy_secret,
+        admin_user_ids=admin_user_ids,
+        media_dir=media_dir,
     )

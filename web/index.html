@@ -1,17 +1,90 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Патанатомия</title><link rel="stylesheet" href="/static/styles.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff">
+  <title>Патанатомия</title>
+  <link rel="stylesheet" href="/static/styles.css">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
   <main class="app">
-    <header><button id="back" hidden aria-label="Назад">←</button><h1>Патанатомия</h1></header>
+    <header>
+      <button id="back" hidden aria-label="Назад">←</button>
+      <h1>Патанатомия</h1>
+      <button id="admin-open" class="ghost" hidden>Админка</button>
+    </header>
+
     <section id="loading">Проверяем доступ…</section>
-    <section id="paywall" hidden><h2>Нужна подписка</h2><p>Доступ к материалам — 120 ₽ на 30 дней.</p><button id="open-bot">Вернуться в бот для оплаты</button></section>
-    <section id="topics" hidden><p id="subscription"></p><div id="topic-list"></div></section>
-    <article id="article" hidden><h2 id="article-title"></h2><div id="article-content"></div></article>
+
+    <section id="paywall" hidden>
+      <h2>Нужна подписка</h2>
+      <p>Доступ к материалам — 120 ₽ на 30 дней.</p>
+      <button id="open-bot">Вернуться в бот для оплаты</button>
+    </section>
+
+    <section id="topics" hidden>
+      <p id="subscription" class="subscription"></p>
+      <div id="topic-list"></div>
+    </section>
+
+    <article id="article" hidden>
+      <h2 id="article-title"></h2>
+      <div id="article-content"></div>
+      <div id="gallery" class="gallery" hidden>
+        <div class="gallery-stage">
+          <button id="gallery-prev" class="gallery-arrow" aria-label="Предыдущее фото">‹</button>
+          <canvas id="gallery-canvas"></canvas>
+          <button id="gallery-next" class="gallery-arrow" aria-label="Следующее фото">›</button>
+        </div>
+        <div id="gallery-counter" class="gallery-counter"></div>
+      </div>
+    </article>
+
+    <section id="admin" hidden>
+      <div class="admin-head">
+        <h2>Админка</h2>
+        <button id="admin-refresh" class="ghost">Обновить</button>
+      </div>
+
+      <div class="admin-card">
+        <h3>Разделы</h3>
+        <form id="category-form" class="stack">
+          <input id="category-title" maxlength="200" placeholder="Название раздела" required>
+          <button type="submit">Добавить раздел</button>
+        </form>
+        <div id="admin-categories"></div>
+      </div>
+
+      <div class="admin-card">
+        <h3>Материалы</h3>
+        <form id="material-form" class="stack">
+          <select id="material-category" required></select>
+          <input id="material-title" maxlength="300" placeholder="Название материала" required>
+          <textarea id="material-text" maxlength="200000" rows="10" placeholder="Текст материала"></textarea>
+          <button type="submit">Создать материал</button>
+        </form>
+        <div id="admin-materials"></div>
+      </div>
+
+      <div id="admin-editor" class="admin-card" hidden>
+        <h3>Редактирование материала</h3>
+        <input type="hidden" id="edit-id">
+        <select id="edit-category"></select>
+        <input id="edit-title" maxlength="300" placeholder="Название">
+        <textarea id="edit-text" maxlength="200000" rows="12" placeholder="Текст"></textarea>
+        <div class="admin-actions">
+          <button id="edit-save">Сохранить</button>
+          <button id="edit-cancel" class="secondary">Отмена</button>
+        </div>
+        <label class="file-label">Добавить фотографии
+          <input id="edit-images" type="file" accept="image/png,image/jpeg,image/webp" multiple>
+        </label>
+        <div id="edit-gallery" class="admin-images"></div>
+      </div>
+    </section>
+
     <p id="error" class="error" hidden></p>
   </main>
   <script src="/static/app.js"></script>

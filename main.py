@@ -8,7 +8,7 @@ import uuid
 import uvicorn
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 from yoomoney import Quickpay
 
@@ -31,21 +31,50 @@ yookassa = YooKassaClient(settings)
 
 
 def main_keyboard() -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text=f"Купить / продлить — {settings.subscription_price:.0f} ₽", callback_data="buy")]]
+    rows = [
+        [InlineKeyboardButton(text="📚 Открыть приложение", web_app=WebAppInfo(url=settings.public_base_url))],
+        [InlineKeyboardButton(text=f"💳 Купить / продлить — {settings.subscription_price:.0f} ₽", callback_data="buy")],
+        [InlineKeyboardButton(text="ℹ️ О курсе", callback_data="course_info")],
+    ]
     if settings.enable_legacy_yoomoney:
-        rows.append([InlineKeyboardButton(text="Оплатить через старый YooMoney (временно)", callback_data="buy_legacy")])
-    rows.append([InlineKeyboardButton(text="Открыть приложение", web_app=WebAppInfo(url=settings.public_base_url))])
+        rows.append([InlineKeyboardButton(text="Оплатить старым способом", callback_data="buy_legacy")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def send_menu(message: Message) -> None:
+    if not message.from_user:
+        return
+    await database.upsert_user(message.from_user.id, message.from_user.username)
+    end = await database.subscription_end(message.from_user.id)
+    status = (
+        f"Подписка активна\\nДействует до: {end[:10]}"
+        if end else
+        "Подписка не активна"
+    )
+    await message.answer(
+        f"Патанатомия\\n\\n{status}\\n\\nАвтор курса: @eucliris",
+        reply_markup=main_keyboard(),
+    )
 
 
 @dp.message(CommandStart())
 async def start(message: Message) -> None:
-    if not message.from_user:
-        return
-    await database.upsert_user(message.from_user.id, message.from_user.username)
-    await message.answer(
-        f"Патанатомия: полный доступ к темам в Mini App. Стоимость — {settings.subscription_price:.0f} ₽ на {settings.subscription_days} дней.",
-        reply_markup=main_keyboard(),
+    await send_menu(message)
+
+
+@dp.message(Command("menu"))
+async def menu(message: Message) -> None:
+    await send_menu(message)
+
+
+@dp.callback_query(F.data == "course_info")
+async def course_info(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.answer(
+        "Курс по патанатомии в Telegram Mini App. "
+        f"Стоимость доступа — {settings.subscription_price:.0f} ₽ на {settings.subscription_days} дней. "
+        "После подтверждения оплаты материалы становятся доступны автоматически.\n\n"
+        "Автор: @eucliris"
     )
 
 
@@ -70,7 +99,7 @@ async def buy(callback: CallbackQuery) -> None:
         logger.exception("Cannot store YooKassa payment for Telegram user %s", user.id)
         await callback.message.answer("Не удалось подготовить платёж. Попробуйте ещё раз через минуту.")
         return
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Перейти к безопасной оплате", url=payment.confirmation_url)]])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Перейти к оплате", url=payment.confirmation_url)]])
     await callback.message.answer("На странице ЮKassa будут доступны банковская карта, СБП и другие подключённые для магазина способы. Доступ откроется только после подтверждения оплаты ЮKassa.", reply_markup=keyboard)
 
 

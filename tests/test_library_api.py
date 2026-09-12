@@ -164,7 +164,7 @@ def test_image_upload_rollback_removes_file(project, monkeypatch):
 
 def test_validation_and_missing_records(project):
     client, _, _ = project
-    for title in ("  ", "x" * 161):
+    for title in ("  ", "x" * 201):
         assert client.post("/api/admin/categories", headers=auth(1), json={"title": title}).status_code == 422
     assert client.post("/api/admin/materials", headers=auth(1), json={"category_id": 999, "title": "X"}).status_code == 404
     for path in ("/api/materials/999", "/api/images/999", "/api/categories/999/materials"):
@@ -212,11 +212,14 @@ def test_yookassa_webhook_still_verifies_and_extends_once(project, monkeypatch):
     lookup = AsyncMock(return_value=remote); monkeypatch.setattr(YooKassaClient, "get_payment", lookup)
     payload = {"event": "payment.succeeded", "object": {"id": "provider-1", "status": "succeeded"}}
     assert client.post("/api/payment/webhook", json=payload).status_code == 403
-    with TestClient(create_app(replace(settings, trust_proxy_headers=True), db)) as webhook_client:
+    bot = AsyncMock()
+    with TestClient(create_app(replace(settings, trust_proxy_headers=True, subscription_days=17), db, bot)) as webhook_client:
         for _ in range(2):
             assert webhook_client.post("/api/payment/webhook", json=payload, headers={"X-Real-IP": "185.71.76.1"}).status_code == 200
     assert lookup.await_count == 2
-    assert datetime.fromisoformat(asyncio.run(db.subscription_end(2))) == datetime.fromisoformat(old_end) + timedelta(days=30)
+    assert datetime.fromisoformat(asyncio.run(db.subscription_end(2))) == datetime.fromisoformat(old_end) + timedelta(days=17)
+    assert bot.send_message.await_count == 1
+    assert "17 дней" in bot.send_message.call_args.args[1]
     assert client.get("/?payment=return").status_code == 200
     assert client.post("/api/yoomoney/notification").status_code == 404
 
@@ -236,3 +239,32 @@ def test_storage_rejects_public_path_and_traversal(tmp_path):
     storage = MediaStorage(str(tmp_path / "media"))
     with pytest.raises(ValueError):
         storage.render("../secret.jpg", 1)
+
+
+@pytest.mark.parametrize("extension,format_name", [("png", "PNG"), ("webp", "WEBP"), ("jpg", "JPEG")])
+def test_earlier_release_images_remain_readable_and_protected(project, extension, format_name):
+    client, db, settings = project
+    _, material_id = create_material(client)
+    raw = io.BytesIO()
+    Image.new("RGB", (800, 600), "#aabbcc").save(raw, format=format_name)
+    filename = "a" * 32 + "." + extension
+    (Path(settings.media_path) / filename).write_bytes(raw.getvalue())
+    image_id = asyncio.run(db.add_image(material_id, filename))
+    response = client.get(f"/api/images/{image_id}", headers=auth(2))
+    assert response.status_code == 200 and response.headers["content-type"] == "image/jpeg"
+    decoded = Image.open(io.BytesIO(response.content))
+    assert decoded.size == (800, 600)
+    assert decoded.convert("RGB").getextrema()[0][0] != decoded.convert("RGB").getextrema()[0][1]
+    assert client.get(f"/api/images/{image_id}", headers=auth(3)).status_code == 403
+    assert client.delete(f"/api/admin/images/{image_id}", headers=auth(1)).status_code == 200
+    assert not (Path(settings.media_path) / filename).exists()
+
+
+def test_existing_large_material_can_be_edited_and_moved(project):
+    client, db, _ = project
+    _, material_id = create_material(client)
+    category = client.post("/api/admin/categories", headers=auth(1), json={"title": "X" * 200}).json()["id"]
+    result = client.patch(f"/api/admin/materials/{material_id}", headers=auth(1), json={"category_id": category, "title": "Y" * 300, "text": "Z" * 200_000})
+    assert result.status_code == 200
+    material = asyncio.run(db.material(material_id))
+    assert material["category_id"] == category and len(material["text"]) == 200_000

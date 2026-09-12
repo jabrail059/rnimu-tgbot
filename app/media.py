@@ -24,18 +24,20 @@ class MediaStorage:
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     def _path(self, filename: str) -> Path:
-        if not re.fullmatch(r"[0-9a-f]{32}\.jpg", filename):
+        # Earlier releases stored original PNG/WebP files with UUID names.
+        if not re.fullmatch(r"[0-9a-f]{32}\.(jpg|png|webp)", filename):
             raise ValueError("Invalid stored image name")
         path = self.directory / filename
         if path.is_symlink():
             raise ValueError("Image symlinks are not allowed")
         return path
 
-    def save(self, data: bytes) -> str:
+    @staticmethod
+    def _decode(source_file: io.BytesIO | Path) -> Image.Image:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("error", Image.DecompressionBombWarning)
-                with Image.open(io.BytesIO(data), formats=("JPEG", "PNG", "WEBP")) as source:
+                with Image.open(source_file, formats=("JPEG", "PNG", "WEBP")) as source:
                     if source.width * source.height > 20_000_000 or getattr(source, "n_frames", 1) != 1:
                         raise InvalidImage("Используйте неподвижное фото размером до 20 мегапикселей.")
                     source.load()
@@ -48,11 +50,16 @@ class MediaStorage:
                         photo.paste(rgba, mask=rgba.getchannel("A"))
                     else:
                         photo.paste(oriented.convert("RGB"))
+        except FileNotFoundError:
+            raise
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
             if isinstance(exc, InvalidImage):
                 raise
             raise InvalidImage("Не удалось прочитать фото. Используйте JPEG, PNG или WebP.") from exc
+        return photo
 
+    def save(self, data: bytes) -> str:
+        photo = self._decode(io.BytesIO(data))
         filename = f"{uuid.uuid4().hex}.jpg"
         path = self._path(filename)
         try:
@@ -67,8 +74,7 @@ class MediaStorage:
     def render(self, filename: str, user_id: int) -> bytes:
         # Watermark is baked into the response, so removing a Canvas/DOM overlay
         # cannot recover a clean subscriber image.
-        with Image.open(self._path(filename)) as source:
-            photo = source.convert("RGBA")
+        photo = self._decode(self._path(filename)).convert("RGBA")
         overlay = Image.new("RGBA", photo.size)
         draw = ImageDraw.Draw(overlay)
         font_size = max(10, min(42, photo.width // 32))

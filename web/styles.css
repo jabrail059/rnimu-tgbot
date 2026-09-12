@@ -18,7 +18,7 @@ h1 { font-size: 24px; margin: 0; letter-spacing: -.6px; }
 h2 { font-size: 25px; margin: 10px 0 18px; line-height: 1.3; overflow-wrap: anywhere; }
 h3 { margin-top: 28px; }
 .eyebrow { margin: 0 0 4px; font-size: 11px; letter-spacing: 1.7px; color: var(--muted); }
-button, input, textarea { font: inherit; }
+button, input, textarea, select { font: inherit; }
 button { border: 1px solid transparent; border-radius: 12px; background: var(--button); color: var(--button-text); padding: 11px 16px; cursor: pointer; min-height: 44px; }
 button:disabled { opacity: .45; cursor: default; }
 button:focus-visible, a:focus-visible, #photo-stage:focus-visible { outline: 3px solid var(--button); outline-offset: 3px; }
@@ -47,7 +47,7 @@ button:focus-visible, a:focus-visible, #photo-stage:focus-visible { outline: 3px
 .gallery-controls { justify-content: space-between; margin-top: 12px; }
 .gallery-hint { text-align: center; }
 label { display: block; font-weight: 600; margin: 18px 0 6px; }
-input, textarea { display: block; width: 100%; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--bg); color: var(--text); user-select: text; -webkit-user-select: text; }
+input, textarea, select { display: block; width: 100%; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--bg); color: var(--text); user-select: text; -webkit-user-select: text; }
 textarea { resize: vertical; min-height: 220px; }
 input[type=file] { font-size: 14px; }
 .image-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px; background: var(--surface); border-radius: 12px; }

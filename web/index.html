@@ -59,15 +59,16 @@
     <section id="category-editor" class="panel" hidden>
       <h2 id="category-editor-title">Новый раздел</h2>
       <form id="category-form">
-        <label for="category-name">Название раздела</label><input id="category-name" maxlength="160" required autocomplete="off">
+        <label for="category-name">Название раздела</label><input id="category-name" maxlength="200" required autocomplete="off">
         <div class="actions"><button type="submit">Сохранить</button><button type="button" id="cancel-category" class="secondary">Отмена</button></div>
       </form>
     </section>
     <section id="editor" class="panel" hidden>
       <h2 id="editor-heading">Новый материал</h2>
       <form id="material-form">
-        <label for="material-title">Название материала</label><input id="material-title" maxlength="160" required autocomplete="off">
-        <label for="material-text">Текст</label><textarea id="material-text" rows="12" maxlength="100000" placeholder="Добавьте учебный текст…"></textarea>
+        <label for="material-category">Раздел</label><select id="material-category" required></select>
+        <label for="material-title">Название материала</label><input id="material-title" maxlength="300" required autocomplete="off">
+        <label for="material-text">Текст</label><textarea id="material-text" rows="12" maxlength="200000" placeholder="Добавьте учебный текст…"></textarea>
         <div class="actions"><button type="submit">Сохранить материал</button><button type="button" id="cancel-material" class="secondary">К списку</button></div>
       </form>
       <section id="editor-images" hidden>

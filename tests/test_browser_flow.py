@@ -42,6 +42,7 @@ def free_port():
 
 def test_admin_reader_gallery_and_privacy(project, tmp_path):
     _, db, settings = project
+    destination_id = asyncio.run(db.save_category("Другой раздел"))
     app = create_app(settings, db)
     html = Path("web/index.html").read_text()
 
@@ -124,6 +125,10 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         element_id = next(iter(element.values()))
         command("POST", f"/element/{element_id}/value", {"text": str(photo_path) + "\n" + str(photo_path)})
         wait_for("document.querySelectorAll('.image-row').length === 2"); idle()
+        fill("material-category", str(destination_id))
+        js("document.getElementById('material-form').requestSubmit()")
+        idle()
+        assert len(asyncio.run(db.materials(destination_id))) == 1
         click("preview-material")
         wait_for("!document.getElementById('photo').hidden"); idle()
         assert js("return document.getElementById('photo').width") == 800

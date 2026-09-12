@@ -59,12 +59,18 @@ def get_settings() -> Settings:
     if legacy_enabled and (not legacy_wallet or not legacy_secret):
         raise RuntimeError("Legacy YooMoney requires YOOMONEY_WALLET and YOOMONEY_NOTIFICATION_SECRET")
     try:
-        admin_ids = frozenset(int(value.strip()) for value in os.getenv("ADMIN_IDS", "").split(",") if value.strip())
+        # Keep configurations from the earlier admin release working. Explicitly
+        # empty ADMIN_IDS still disables admin access instead of reviving old IDs.
+        raw_admins = os.getenv("ADMIN_IDS", os.getenv("ADMIN_USER_IDS", ""))
+        admin_ids = frozenset(int(value.strip()) for value in raw_admins.split(",") if value.strip())
         if any(user_id <= 0 for user_id in admin_ids):
             raise ValueError
     except ValueError as exc:
         raise RuntimeError("ADMIN_IDS must contain positive Telegram user IDs separated by commas") from exc
-    media_path = os.getenv("MEDIA_PATH", "data/material_images").strip()
+    default_media = "data/material_images"
+    if not Path(default_media).exists() and Path("data/media").is_dir():
+        default_media = "data/media"
+    media_path = os.getenv("MEDIA_PATH", os.getenv("MEDIA_DIR", "").strip() or default_media).strip()
     if not media_path or Path(media_path).resolve().is_relative_to(Path(__file__).resolve().parent.parent / "web"):
         raise RuntimeError("MEDIA_PATH must be outside the public web directory")
     return Settings(

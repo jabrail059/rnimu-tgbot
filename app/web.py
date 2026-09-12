@@ -30,12 +30,13 @@ class TelegramRequest(BaseModel):
 
 class CategoryInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    title: str = Field(min_length=1, max_length=160)
+    title: str = Field(min_length=1, max_length=200)
 
 
 class MaterialInput(CategoryInput):
+    title: str = Field(min_length=1, max_length=300)
     category_id: int = Field(gt=0)
-    text: str = Field(default="", max_length=100_000)
+    text: str = Field(default="", max_length=200_000)
 
 
 def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
@@ -147,6 +148,8 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
                 photo = await run_in_threadpool(media.render, record["filename"], user_id)
         except FileNotFoundError:
             raise HTTPException(404, "Фото не найдено.")
+        except InvalidImage as exc:
+            raise HTTPException(422, str(exc)) from exc
         return Response(photo, media_type="image/jpeg")
 
     @app.post("/api/admin/categories", status_code=201, dependencies=[Depends(admin)])
@@ -254,7 +257,7 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
             raise HTTPException(400, "Unknown or mismatched payment")
         if result.activated and bot:
             try:
-                await bot.send_message(result.user_id, "Оплата подтверждена. Подписка продлена на 30 дней — приложение уже доступно.")
+                await bot.send_message(result.user_id, f"Оплата подтверждена. Подписка продлена на {settings.subscription_days} дней — приложение уже доступно.")
             except Exception:
                 logger.exception("Cannot send payment confirmation to Telegram user %s", result.user_id)
         return {"ok": True}

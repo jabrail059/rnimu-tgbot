@@ -214,6 +214,14 @@ function editCategory(rename = false) {
 
 async function editMaterial(id = null) {
   const data = id ? await api(`/api/materials/${id}`) : null;
+  const {categories} = await api("/api/categories");
+  const select = byId("material-category"); select.replaceChildren();
+  categories.forEach(category => {
+    const option = document.createElement("option");
+    option.value = category.id; option.textContent = category.title;
+    select.append(option);
+  });
+  select.value = data?.category_id || state.category.id;
   state.material = data;
   byId("editor-heading").textContent = id ? "Редактирование материала" : "Новый материал";
   byId("material-title").value = data?.title || "";
@@ -271,11 +279,13 @@ byId("material-form").onsubmit = event => { event.preventDefault(); run(async ()
   const title = byId("material-title").value.trim();
   if (!title) throw new Error("Введите название материала.");
   const id = state.material?.id;
+  const categoryId = Number(byId("material-category").value);
   const result = await api(id ? `/api/admin/materials/${id}` : "/api/admin/materials", {method: id ? "PATCH" : "POST",
-    data: {category_id: state.category.id, title, text: byId("material-text").value}});
+    data: {category_id: categoryId, title, text: byId("material-text").value}});
+  state.category = {id: categoryId, title: byId("material-category").selectedOptions[0].textContent};
   setDirty(false); await editMaterial(result.id); notice("Материал сохранён и доступен подписчикам.");
 }); };
-for (const id of ["category-name", "material-title", "material-text"]) byId(id).addEventListener("input", () => setDirty(true));
+for (const id of ["category-name", "material-category", "material-title", "material-text"]) byId(id).addEventListener("input", () => setDirty(true));
 
 byId("delete-category").onclick = () => run(async () => {
   if (!window.confirm("Удалить раздел вместе со всеми материалами и фотографиями? Отменить это действие нельзя.")) return;

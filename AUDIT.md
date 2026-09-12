@@ -48,3 +48,9 @@ Security boundary: subscription checks and permissions are enforced by the serve
 Validation: runtime dependencies installed in local `.venv`; API/database tests cover migration preservation, authorization, content CRUD, image limits/cleanup/watermarks, subscription revocation and repeated YooKassa webhooks. A browser acceptance test uses the existing Firefox/geckodriver with a local test server and signed test Telegram data. No production database, Telegram account or YooKassa shop is touched. Device-specific Telegram behavior and a real provider payment remain deployment acceptance checks.
 
 Final results: **22 tests passed**, including Firefox acceptance and bot menu/checkout tests; Python compilation, JavaScript syntax check and `git diff --check` passed. Two upstream Starlette test-client deprecation warnings remain; they do not affect the test results.
+
+## Integration of divergent admin commits — 2026-09-12
+
+Merged the earlier remote admin implementation with the current CMS. Kept the current authenticated API, watermark rendering, client privacy handling and payment activation. Preserved the remote material-category selector, input length limits and configurable subscription duration in payment notifications. Added compatibility for `ADMIN_USER_IDS`, `MEDIA_DIR`, the old default `data/media` directory and UUID-named PNG/WebP images. Old content tables and files remain usable; existing DB admin rows do not override ENV permissions.
+
+Validation: **31 tests passed**, including upgrade from the earlier admin schema, old settings/media compatibility, material moves through the Firefox UI, and idempotent payment notifications with a non-default duration. Python compilation and JavaScript syntax checks passed.

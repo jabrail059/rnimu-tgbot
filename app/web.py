@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import logging
+import asyncio
+import time
+from collections import OrderedDict, deque
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+import aiosqlite
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.concurrency import run_in_threadpool
 
 from app.config import Settings
-from app.content import CONTENT, TOPICS
 from app.database import Database
+from app.media import InvalidImage, MediaStorage
 from app.security import telegram_user_id, yookassa_source_is_allowed, yoomoney_signature_is_valid
 from app.yookassa import YooKassaClient, YooKassaError
 
@@ -22,10 +28,41 @@ class TelegramRequest(BaseModel):
     init_data: str = Field(min_length=1, max_length=8192)
 
 
+class CategoryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    title: str = Field(min_length=1, max_length=160)
+
+
+class MaterialInput(CategoryInput):
+    category_id: int = Field(gt=0)
+    text: str = Field(default="", max_length=100_000)
+
+
 def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
     app = FastAPI(title="Pathology Mini App", docs_url=None, redoc_url=None, openapi_url=None)
-    app.mount("/static", StaticFiles(directory="web"), name="static")
+    web_directory = Path(__file__).resolve().parent.parent / "web"
+    app.mount("/static", StaticFiles(directory=web_directory), name="static")
     yookassa = YooKassaClient(settings)
+    media = MediaStorage(settings.media_path)
+    image_workers = asyncio.Semaphore(2)
+    image_requests: OrderedDict[int, deque[float]] = OrderedDict()
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/api/") or request.url.path == "/":
+            response.headers["Cache-Control"] = "private, no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Vary"] = "Authorization"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self' https://telegram.org; "
+            "style-src 'self'; img-src 'self' blob:; connect-src 'self'; "
+            "object-src 'none'; base-uri 'none'; form-action 'none'; "
+            "frame-ancestors https://web.telegram.org https://*.telegram.org"
+        )
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError):
@@ -39,9 +76,25 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
     def authorized_user(init_data: str) -> int:
         return telegram_user_id(init_data, settings.bot_token)
 
+    def request_user(request: Request) -> int:
+        scheme, _, credentials = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() != "tma":
+            raise HTTPException(401, "Откройте приложение заново из Telegram.")
+        return authorized_user(credentials)
+
+    async def reader(user_id: int = Depends(request_user)) -> int:
+        if user_id not in settings.admin_ids and not await database.subscription_end(user_id):
+            raise HTTPException(403, "Нужна активная подписка.")
+        return user_id
+
+    def admin(user_id: int = Depends(request_user)) -> int:
+        if user_id not in settings.admin_ids:
+            raise HTTPException(403, "Нужны права администратора.")
+        return user_id
+
     @app.get("/", include_in_schema=False)
     async def index():
-        return FileResponse("web/index.html", headers={"Cache-Control": "no-store"})
+        return FileResponse(web_directory / "index.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz():
@@ -49,24 +102,128 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
 
     @app.post("/api/session")
     async def session(data: TelegramRequest):
-        subscription_end = await database.subscription_end(authorized_user(data.init_data))
-        return {"is_active": subscription_end is not None, "subscription_end": subscription_end}
+        user_id = authorized_user(data.init_data)
+        subscription_end = await database.subscription_end(user_id)
+        return {"is_active": subscription_end is not None, "subscription_end": subscription_end,
+                "is_admin": user_id in settings.admin_ids, "user_id": user_id,
+                "price": f"{settings.subscription_price:.2f}", "days": settings.subscription_days,
+                "max_image_bytes": settings.max_image_bytes}
 
-    @app.post("/api/topics")
-    async def topics(data: TelegramRequest):
-        if not await database.subscription_end(authorized_user(data.init_data)):
-            raise HTTPException(403, "Subscription required")
-        return {"topics": TOPICS}
+    @app.get("/api/categories", dependencies=[Depends(reader)])
+    async def categories():
+        return {"categories": await database.categories()}
 
-    @app.post("/api/content/{topic_id}")
-    async def content(topic_id: str, data: TelegramRequest):
-        if not await database.subscription_end(authorized_user(data.init_data)):
-            raise HTTPException(403, "Subscription required")
-        text = CONTENT.get(topic_id)
-        if text is None:
-            raise HTTPException(404, "Topic not found")
-        title = next(topic["title"] for topic in TOPICS if topic["id"] == topic_id)
-        return {"title": title, "content": text}
+    @app.get("/api/categories/{category_id}/materials", dependencies=[Depends(reader)])
+    async def materials(category_id: int):
+        category = await database.category(category_id)
+        if category is None:
+            raise HTTPException(404, "Раздел не найден.")
+        return {"category": category, "materials": await database.materials(category_id)}
+
+    @app.get("/api/materials/{material_id}", dependencies=[Depends(reader)])
+    async def material(material_id: int):
+        result = await database.material(material_id)
+        if result is None:
+            raise HTTPException(404, "Материал не найден.")
+        return result
+
+    @app.get("/api/images/{image_id}")
+    async def material_image(image_id: int, user_id: int = Depends(reader)):
+        now = time.monotonic()
+        history = image_requests.setdefault(user_id, deque())
+        image_requests.move_to_end(user_id)
+        while history and history[0] <= now - 60:
+            history.popleft()
+        if len(history) >= 60:
+            raise HTTPException(429, "Слишком много запросов фото. Подождите минуту.", headers={"Retry-After": "60"})
+        history.append(now)
+        if len(image_requests) > 10_000:
+            image_requests.popitem(last=False)
+        record = await database.image(image_id)
+        if record is None:
+            raise HTTPException(404, "Фото не найдено.")
+        try:
+            async with image_workers:
+                photo = await run_in_threadpool(media.render, record["filename"], user_id)
+        except FileNotFoundError:
+            raise HTTPException(404, "Фото не найдено.")
+        return Response(photo, media_type="image/jpeg")
+
+    @app.post("/api/admin/categories", status_code=201, dependencies=[Depends(admin)])
+    async def create_category(data: CategoryInput):
+        return {"id": await database.save_category(data.title)}
+
+    @app.patch("/api/admin/categories/{category_id}", dependencies=[Depends(admin)])
+    async def update_category(category_id: int, data: CategoryInput):
+        if await database.save_category(data.title, category_id) is None:
+            raise HTTPException(404, "Раздел не найден.")
+        return {"id": category_id}
+
+    async def store_material(data: MaterialInput, material_id: int | None = None):
+        try:
+            result = await database.save_material(data.category_id, data.title, data.text, material_id)
+        except aiosqlite.IntegrityError:
+            raise HTTPException(404, "Раздел не найден.")
+        if result is None:
+            raise HTTPException(404, "Материал не найден.")
+        return {"id": result}
+
+    @app.post("/api/admin/materials", status_code=201, dependencies=[Depends(admin)])
+    async def create_material(data: MaterialInput):
+        return await store_material(data)
+
+    @app.patch("/api/admin/materials/{material_id}", dependencies=[Depends(admin)])
+    async def update_material(material_id: int, data: MaterialInput):
+        return await store_material(data, material_id)
+
+    @app.post("/api/admin/materials/{material_id}/images", status_code=201, dependencies=[Depends(admin)])
+    async def upload_image(material_id: int, request: Request):
+        if await database.material(material_id) is None:
+            raise HTTPException(404, "Материал не найден.")
+        # Read raw file bytes only after authentication, with an enforced limit
+        # even for chunked requests or a forged/missing Content-Length.
+        data = bytearray()
+        async for chunk in request.stream():
+            if len(data) + len(chunk) > settings.max_image_bytes:
+                raise HTTPException(413, "Размер фото не должен превышать 10 МБ.")
+            data.extend(chunk)
+        try:
+            async with image_workers:
+                filename = await run_in_threadpool(media.save, bytes(data))
+        except InvalidImage as exc:
+            raise HTTPException(422, str(exc)) from exc
+        try:
+            image_id = await database.add_image(material_id, filename)
+        except BaseException as exc:
+            await run_in_threadpool(media.delete, filename)
+            if isinstance(exc, aiosqlite.IntegrityError):
+                raise HTTPException(404, "Материал был удалён.") from exc
+            raise
+        return {"id": image_id}
+
+    async def remove_content(kind: str, content_id: int):
+        filenames = await database.delete_content(kind, content_id)
+        if filenames is None:
+            raise HTTPException(404, "Запись не найдена.")
+        for filename in filenames:
+            try:
+                await run_in_threadpool(media.delete, filename)
+            except OSError:
+                # DB deletion immediately revokes access even if disk cleanup fails.
+                logger.exception("Could not remove private image %s", filename)
+        return {"ok": True}
+
+    @app.delete("/api/admin/categories/{category_id}", dependencies=[Depends(admin)])
+    async def delete_category(category_id: int):
+        return await remove_content("category", category_id)
+
+    @app.delete("/api/admin/materials/{material_id}", dependencies=[Depends(admin)])
+    async def delete_material(material_id: int):
+        return await remove_content("material", material_id)
+
+    @app.delete("/api/admin/images/{image_id}", dependencies=[Depends(admin)])
+    async def delete_image(image_id: int):
+        return await remove_content("image", image_id)
 
     @app.post("/api/payment/webhook", status_code=200)
     async def payment_webhook(request: Request):

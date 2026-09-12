@@ -5,3 +5,5 @@ __pycache__
 *.db-shm
 *.db-wal
 data/*.db
+data/material_images/
+.pytest_cache/

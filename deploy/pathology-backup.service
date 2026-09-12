@@ -5,6 +5,7 @@ Description=Backup Pathology bot SQLite database
 Type=oneshot
 User=pathology
 Group=pathology
+WorkingDirectory=/opt/rnimu-tgbot
 EnvironmentFile=/etc/pathology-bot.env
 Environment=DATABASE_BACKUP_DIR=/var/backups/pathology-bot
 Environment=DATABASE_BACKUP_RETENTION_DAYS=14

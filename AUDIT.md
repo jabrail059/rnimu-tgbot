@@ -34,3 +34,17 @@ The complete line-level old/new diff is available with `git diff f5a4088..HEAD` 
 ## Validation performed
 
 `python3 -m compileall -q main.py app` and `git diff --check` pass. Runtime/integration tests could not run: the host has neither project packages nor `pip`, and `python3 -m venv` fails because the Ubuntu `python3.14-venv` package is missing. Installation needs an interactive `sudo` password.
+
+## Mini App CMS update — 2026-09-12
+
+Implemented the requested category → material → text/photo gallery workflow. SQLite migration 2 adds only content tables and indexes; each connection enables foreign keys for cascading content deletion. Admin IDs come exclusively from ENV, avoiding a second permissions source. The YooKassa provider client and payment activation logic are retained.
+
+Added authenticated content CRUD, bounded image uploads, image decoding/normalization with metadata removal, private disk storage, server-rendered personalized watermarks, protected Canvas delivery, per-user image rate limiting, and no-store/security response headers. Deleting content revokes API access and removes its image files; failed image DB inserts roll back the saved file. Administrators can preview, edit and delete content without paying for a subscription.
+
+Updated `/start`, added `/menu`, `/id`, course information and Telegram menu configuration, and renamed the checkout button to “Перейти к оплате”. The Mini App displays configured pricing, subscription expiry, and empty/error states. It hides on loss of activity and revalidates access on return; editor drafts survive focus changes. Nginx now accepts image uploads and permits Telegram Web embedding. The backup service has its missing working directory set; full media backup requirements are documented separately because the existing timer backs up only SQLite.
+
+Security boundary: subscription checks and permissions are enforced by the server. Canvas, selection/printing restrictions and inactivity hiding only deter casual copying. Telegram Mini Apps provide no documented native screenshot prohibition. Authorized clients can still capture received data. Image watermarks are baked into each authenticated response, not removable DOM overlays.
+
+Validation: runtime dependencies installed in local `.venv`; API/database tests cover migration preservation, authorization, content CRUD, image limits/cleanup/watermarks, subscription revocation and repeated YooKassa webhooks. A browser acceptance test uses the existing Firefox/geckodriver with a local test server and signed test Telegram data. No production database, Telegram account or YooKassa shop is touched. Device-specific Telegram behavior and a real provider payment remain deployment acceptance checks.
+
+Final results: **22 tests passed**, including Firefox acceptance and bot menu/checkout tests; Python compilation, JavaScript syntax check and `git diff --check` passed. Two upstream Starlette test-client deprecation warnings remain; they do not affect the test results.

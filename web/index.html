@@ -1,19 +1,86 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Патанатомия</title><link rel="stylesheet" href="/static/styles.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Патанатомия · @eucliris</title>
+  <link rel="stylesheet" href="/static/styles.css">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <main class="app">
-    <header><button id="back" hidden aria-label="Назад">←</button><h1>Патанатомия</h1></header>
-    <section id="loading">Проверяем доступ…</section>
-    <section id="paywall" hidden><h2>Нужна подписка</h2><p>Доступ к материалам — 120 ₽ на 30 дней.</p><button id="open-bot">Вернуться в бот для оплаты</button></section>
-    <section id="topics" hidden><p id="subscription"></p><div id="topic-list"></div></section>
-    <article id="article" hidden><h2 id="article-title"></h2><div id="article-content"></div></article>
-    <p id="error" class="error" hidden></p>
+  <main class="app" id="app">
+    <header>
+      <button id="back" class="secondary icon" hidden aria-label="Назад">←</button>
+      <div><p class="eyebrow">КУРС · @eucliris</p><h1>Патанатомия</h1></div>
+      <button id="admin-toggle" class="secondary" hidden>Управление</button>
+    </header>
+    <p id="subscription" class="status" hidden></p>
+    <p id="loading" role="status">Проверяем доступ…</p>
+    <p id="error" class="error" role="alert" hidden></p>
+    <p id="notice" class="status" role="status" hidden></p>
+    <section id="paywall" class="panel" hidden>
+      <p class="eyebrow">ДОСТУП К КУРСУ</p><h2>Учитесь в своём темпе</h2>
+      <p>Тексты и фотографии препаратов, собранные по разделам. Новые материалы появляются постепенно.</p>
+      <p id="price"></p><button id="open-bot">Вернуться в бот для оплаты</button>
+      <button id="refresh-session" class="secondary">Я оплатил — проверить доступ</button>
+    </section>
+    <section id="catalog" hidden>
+      <div class="section-heading"><h2 id="catalog-title">Разделы</h2><button id="add-category" hidden>+ Раздел</button></div>
+      <p id="catalog-hint" class="muted">Выберите раздел, чтобы перейти к материалам.</p>
+      <div id="category-list" class="card-list"></div>
+    </section>
+    <section id="materials" hidden>
+      <p class="eyebrow">РАЗДЕЛ</p><h2 id="category-title"></h2>
+      <div id="category-actions" class="actions" hidden>
+        <button id="add-material">+ Материал</button>
+        <button id="rename-category" class="secondary">Переименовать</button>
+        <button id="delete-category" class="danger">Удалить раздел</button>
+      </div>
+      <div id="material-list" class="card-list"></div>
+    </section>
+    <article id="article" class="protected" hidden>
+      <p class="eyebrow">УЧЕБНЫЙ МАТЕРИАЛ</p><h2 id="article-title"></h2>
+      <p id="reader-mark" class="muted"></p><div id="article-content"></div>
+      <section id="gallery" aria-label="Фотографии материала" hidden>
+        <h3>Фотографии</h3>
+        <div id="photo-stage" tabindex="0" role="group" aria-label="Галерея. Листайте свайпом или стрелками.">
+          <canvas id="photo" role="img" aria-label="Фото препарата"></canvas>
+          <p id="photo-loading" role="status" hidden>Загружаем фото…</p>
+        </div>
+        <div class="gallery-controls">
+          <button id="prev-photo" class="secondary icon" aria-label="Предыдущее фото">←</button>
+          <span id="photo-counter" aria-live="polite"></span>
+          <button id="next-photo" class="secondary icon" aria-label="Следующее фото">→</button>
+        </div>
+        <p class="muted gallery-hint">Листайте фотографии свайпом или стрелками</p>
+      </section>
+    </article>
+    <section id="category-editor" class="panel" hidden>
+      <h2 id="category-editor-title">Новый раздел</h2>
+      <form id="category-form">
+        <label for="category-name">Название раздела</label><input id="category-name" maxlength="160" required autocomplete="off">
+        <div class="actions"><button type="submit">Сохранить</button><button type="button" id="cancel-category" class="secondary">Отмена</button></div>
+      </form>
+    </section>
+    <section id="editor" class="panel" hidden>
+      <h2 id="editor-heading">Новый материал</h2>
+      <form id="material-form">
+        <label for="material-title">Название материала</label><input id="material-title" maxlength="160" required autocomplete="off">
+        <label for="material-text">Текст</label><textarea id="material-text" rows="12" maxlength="100000" placeholder="Добавьте учебный текст…"></textarea>
+        <div class="actions"><button type="submit">Сохранить материал</button><button type="button" id="cancel-material" class="secondary">К списку</button></div>
+      </form>
+      <section id="editor-images" hidden>
+        <h3>Фотографии</h3>
+        <p class="muted">JPEG, PNG или WebP, до 10 МБ и 20 мегапикселей. Фото появятся в галерее в порядке загрузки.</p>
+        <label for="image-files">Добавить фотографии</label><input id="image-files" type="file" accept="image/jpeg,image/png,image/webp" multiple>
+        <p id="upload-status" role="status" hidden></p><div id="editor-image-list" class="card-list"></div>
+        <div class="actions"><button id="preview-material" class="secondary">Посмотреть материал</button><button id="delete-material" class="danger">Удалить материал</button></div>
+      </section>
+      <p id="save-first" class="muted">Сначала сохраните материал, затем добавьте фотографии.</p>
+    </section>
+    <footer>Автор курса <a href="https://t.me/eucliris" target="_blank" rel="noopener noreferrer">@eucliris</a></footer>
   </main>
-  <script src="/static/app.js"></script>
+  <div id="privacy-shield" hidden role="status"><div><h2>Материал скрыт</h2><p>Вернитесь в приложение, чтобы продолжить чтение.</p><button id="resume">Продолжить</button></div></div>
 </body>
 </html>

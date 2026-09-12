@@ -8,3 +8,4 @@ data/*.db
 data/material_images/
 data/media/
 .pytest_cache/
+AUDIT.md

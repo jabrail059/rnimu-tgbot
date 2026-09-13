@@ -10,10 +10,13 @@ from urllib.parse import parse_qsl
 from fastapi import HTTPException
 
 
-def telegram_user_id(init_data: str, bot_token: str) -> int:
+def telegram_user_id(init_data: str, bot_token: str, max_age: int = 3600) -> int:
     if not init_data or len(init_data) > 8192:
         raise HTTPException(401, "Telegram authorization data is missing")
-    fields = dict(parse_qsl(init_data, keep_blank_values=True))
+    pairs = parse_qsl(init_data, keep_blank_values=True)
+    fields = dict(pairs)
+    if len(fields) != len(pairs):
+        raise HTTPException(401, "Invalid Telegram authorization data")
     received_hash = fields.pop("hash", None)
     if not received_hash:
         raise HTTPException(401, "Telegram authorization data is missing")
@@ -24,9 +27,12 @@ def telegram_user_id(init_data: str, bot_token: str) -> int:
         raise HTTPException(401, "Invalid Telegram authorization data")
     try:
         auth_date = int(fields["auth_date"])
-        if auth_date > time.time() + 60 or time.time() - auth_date > 3600:
+        if auth_date > time.time() + 60 or time.time() - auth_date > max_age:
             raise HTTPException(401, "Telegram authorization data expired")
-        return int(json.loads(fields["user"])["id"])
+        user_id = json.loads(fields["user"])["id"]
+        if type(user_id) is not int or user_id <= 0:
+            raise ValueError
+        return user_id
     except (KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
         raise HTTPException(401, "Invalid Telegram user data") from exc
 

@@ -3,23 +3,28 @@ from __future__ import annotations
 import logging
 import asyncio
 import time
+import hashlib
 from collections import OrderedDict, deque
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Literal
+from urllib.parse import parse_qsl, urlsplit
 
 import aiosqlite
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.config import Settings
+from app.access import AccessControl
 from app.database import Database
 from app.documents import DocumentStorage, InvalidPDF
 from app.media import InvalidImage, MediaStorage
 from app.security import telegram_user_id, yookassa_source_is_allowed, yoomoney_signature_is_valid
+from app.proofs import digest, verify_proof
 from app.yookassa import YooKassaClient, YooKassaError
 
 logger = logging.getLogger(__name__)
@@ -40,9 +45,25 @@ class MaterialInput(CategoryInput):
     text: str = Field(default="", max_length=200_000)
 
 
+class ViewInput(BaseModel):
+    view: str = Field(min_length=32, max_length=128)
+
+
+class TicketInput(ViewInput):
+    kind: Literal["image", "document"]
+    resource_id: int = Field(gt=0)
+    page: int = Field(default=1, gt=0)
+
+
 def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
     app = FastAPI(title="Pathology Mini App", docs_url=None, redoc_url=None, openapi_url=None)
     web_directory = Path(__file__).resolve().parent.parent / "web"
+    # Content hashes invalidate previously cached clients when the access
+    # protocol changes; stale JS must never silently downgrade authorization.
+    shell = (web_directory / "index.html").read_text()
+    for name in ("app.js", "styles.css", "auth.js"):
+        version = hashlib.sha256((web_directory / name).read_bytes()).hexdigest()[:16]
+        shell = shell.replace(f"/static/{name}", f"/static/{name}?v={version}")
     app.mount("/static", StaticFiles(directory=web_directory), name="static")
     yookassa = YooKassaClient(settings)
     media = MediaStorage(settings.media_path)
@@ -51,6 +72,9 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
     document_worker = asyncio.Semaphore(1)
     document_uploads = asyncio.Semaphore(2)
     image_requests: OrderedDict[int, deque[float]] = OrderedDict()
+    access = AccessControl(database, settings)
+    public = urlsplit(settings.public_base_url)
+    public_origin = f"{public.scheme}://{public.netloc}"
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -59,12 +83,15 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
             response.headers["Cache-Control"] = "private, no-store, max-age=0"
             response.headers["Pragma"] = "no-cache"
             response.headers["Vary"] = "Authorization"
+        elif request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), display-capture=()"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self' https://telegram.org; "
             "style-src 'self'; img-src 'self' blob:; connect-src 'self'; "
-            "object-src 'none'; base-uri 'none'; form-action 'none'; "
+            "object-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'none'; "
             "frame-ancestors https://web.telegram.org https://*.telegram.org"
         )
         return response
@@ -78,14 +105,17 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
         logger.exception("Unhandled API error at %s", request.url.path)
         return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
-    def authorized_user(init_data: str) -> int:
-        return telegram_user_id(init_data, settings.bot_token)
+    def proof(request: Request, token: str | None = None):
+        return verify_proof(request.headers.get("dpop", ""), request.method,
+                            public_origin + request.url.path, time.time(), token=token)
 
-    def request_user(request: Request) -> int:
+    async def request_user(request: Request) -> int:
         scheme, _, credentials = request.headers.get("authorization", "").partition(" ")
-        if scheme.lower() != "tma":
+        if scheme.lower() != "dpop" or not 32 <= len(credentials) <= 128:
             raise HTTPException(401, "Откройте приложение заново из Telegram.")
-        return authorized_user(credentials)
+        session = await access.authenticate(credentials, proof(request, credentials))
+        request.state.reader_session = session
+        return session.user_id
 
     async def reader(user_id: int = Depends(request_user)) -> int:
         if user_id not in settings.admin_ids and not await database.subscription_end(user_id):
@@ -99,20 +129,33 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     async def index():
-        return FileResponse(web_directory / "index.html", headers={"Cache-Control": "no-store"})
+        return HTMLResponse(shell, headers={"Cache-Control": "no-store"})
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz():
         return {"ok": True}
 
-    @app.post("/api/session")
-    async def session(data: TelegramRequest):
-        user_id = authorized_user(data.init_data)
+    async def session_info(user_id: int):
         subscription_end = await database.subscription_end(user_id)
         return {"is_active": subscription_end is not None, "subscription_end": subscription_end,
                 "is_admin": user_id in settings.admin_ids, "user_id": user_id,
                 "price": f"{settings.subscription_price:.2f}", "days": settings.subscription_days,
                 "max_image_bytes": settings.max_image_bytes, "max_pdf_bytes": settings.max_pdf_bytes}
+
+    @app.get("/api/session/clock")
+    async def session_clock():
+        return {"server_time": time.time()}
+
+    @app.post("/api/session")
+    async def session(data: TelegramRequest, request: Request):
+        user_id = telegram_user_id(data.init_data, settings.bot_token, max_age=300)
+        launch_hash = digest(dict(parse_qsl(data.init_data))["hash"])
+        token, expires = await access.create_session(user_id, launch_hash, proof(request))
+        return {**await session_info(user_id), "access_token": token, "session_expires": expires, "server_time": time.time()}
+
+    @app.get("/api/session")
+    async def current_session(request: Request, user_id: int = Depends(request_user)):
+        return {**await session_info(user_id), "session_expires": request.state.reader_session.expires, "server_time": time.time()}
 
     @app.get("/api/categories", dependencies=[Depends(reader)])
     async def categories():
@@ -126,11 +169,38 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
         return {"category": category, "materials": await database.materials(category_id)}
 
     @app.get("/api/materials/{material_id}", dependencies=[Depends(reader)])
-    async def material(material_id: int):
+    async def material(material_id: int, request: Request):
         result = await database.material(material_id)
         if result is None:
             raise HTTPException(404, "Материал не найден.")
+        result["view_token"] = await access.open_view(request.state.reader_session, material_id)
         return result
+
+    @app.post("/api/reader/ticket", dependencies=[Depends(reader)])
+    async def page_ticket(data: TicketInput, request: Request):
+        ticket = await access.issue_ticket(request.state.reader_session, data.view, data.kind, data.resource_id, data.page)
+        return {"ticket": ticket, "expires_in": 30}
+
+    @app.post("/api/reader/heartbeat", dependencies=[Depends(reader)])
+    async def reader_heartbeat(data: ViewInput, request: Request):
+        await access.heartbeat(request.state.reader_session, data.view)
+        return {"ok": True}
+
+    @app.post("/api/reader/close", dependencies=[Depends(request_user)])
+    async def reader_close(data: ViewInput, request: Request):
+        await access.close_view(request.state.reader_session, data.view)
+        return {"ok": True}
+
+    @app.get("/api/admin/security/events", dependencies=[Depends(admin)])
+    async def security_events():
+        return {"events": await access.audit()}
+
+    @app.post("/api/admin/security/users/{user_id}/{action}", dependencies=[Depends(admin)])
+    async def manage_access(user_id: int, action: Literal["revoke", "unblock"]):
+        if user_id <= 0:
+            raise HTTPException(422, "Некорректный Telegram ID.")
+        await access.manage_user(user_id, action)
+        return {"ok": True}
 
     def limit_page_requests(user_id: int):
         now = time.monotonic()
@@ -145,11 +215,13 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
             image_requests.popitem(last=False)
 
     @app.get("/api/images/{image_id}")
-    async def material_image(image_id: int, user_id: int = Depends(reader)):
+    async def material_image(image_id: int, request: Request, user_id: int = Depends(reader)):
         limit_page_requests(user_id)
         record = await database.image(image_id)
         if record is None:
             raise HTTPException(404, "Фото не найдено.")
+        view = request.headers.get("x-read-view", "")
+        await access.consume_ticket(request.state.reader_session, view, request.headers.get("x-page-ticket", ""), f"image:{image_id}:1")
         try:
             async with image_workers:
                 photo = await run_in_threadpool(media.render, record["filename"])
@@ -157,24 +229,27 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
             raise HTTPException(404, "Фото не найдено.")
         except InvalidImage as exc:
             raise HTTPException(422, str(exc)) from exc
+        await access.check_delivery(request.state.reader_session, view)
         return Response(photo, media_type="image/jpeg")
 
     @app.get("/api/documents/{document_id}/pages/{page_number}")
-    async def document_page(document_id: int, page_number: int, user_id: int = Depends(reader)):
+    async def document_page(document_id: int, page_number: int, request: Request, user_id: int = Depends(reader)):
         limit_page_requests(user_id)
         record = await database.document(document_id)
         if record is None or not 1 <= page_number <= len(record["page_sizes"]):
             raise HTTPException(404, "Страница PDF не найдена.")
+        view = request.headers.get("x-read-view", "")
+        await access.consume_ticket(request.state.reader_session, view, request.headers.get("x-page-ticket", ""), f"document:{document_id}:{page_number}")
         try:
             async with document_worker:
                 # Access may expire while waiting for another page to render.
-                await reader(user_id)
+                await access.check_delivery(request.state.reader_session, view)
                 page = await run_in_threadpool(documents.render, record["filename"], page_number - 1)
         except (FileNotFoundError, IndexError):
             raise HTTPException(404, "Страница PDF не найдена.")
         except InvalidPDF as exc:
             raise HTTPException(422, str(exc)) from exc
-        await reader(user_id)
+        await access.check_delivery(request.state.reader_session, view)
         return Response(page, media_type="image/jpeg")
 
     @app.post("/api/admin/categories", status_code=201, dependencies=[Depends(admin)])

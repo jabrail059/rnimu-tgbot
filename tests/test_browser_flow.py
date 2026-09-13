@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -44,7 +45,8 @@ def free_port():
 def test_admin_reader_gallery_and_privacy(project, tmp_path):
     _, db, settings = project
     destination_id = asyncio.run(db.save_category("Другой раздел"))
-    app = create_app(settings, db)
+    app_port, driver_port = free_port(), free_port()
+    app = create_app(replace(settings, public_base_url=f"http://127.0.0.1:{app_port}"), db)
     html = Path("web/index.html").read_text()
 
     @app.get("/test-shell")
@@ -63,7 +65,6 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         }}; window.testErrors = []; window.addEventListener('error', e => window.testErrors.push(e.message));
         """, media_type="application/javascript")
 
-    app_port, driver_port = free_port(), free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=app_port, log_level="error"))
     server_thread = threading.Thread(target=server.run, daemon=True)
     server_thread.start()

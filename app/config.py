@@ -30,6 +30,9 @@ class Settings:
     max_image_bytes: int = 10 * 1024 * 1024
     max_pdf_bytes: int = 512 * 1024 * 1024
     subscription_reminder_hour: int = 10
+    read_pages_per_minute: int = 40
+    read_pages_per_hour: int = 180
+    read_pages_per_day: int = 600
 
     @property
     def payment_return_url(self) -> str:
@@ -67,6 +70,15 @@ def get_settings() -> Settings:
             raise ValueError
     except ValueError as exc:
         raise RuntimeError("SUBSCRIPTION_REMINDER_HOUR must be an hour from 0 to 23 (Moscow time)") from exc
+    read_limits = {}
+    for key, default in (("READ_PAGES_PER_MINUTE", 40), ("READ_PAGES_PER_HOUR", 180), ("READ_PAGES_PER_DAY", 600)):
+        try:
+            value = int(os.getenv(key, str(default)))
+            if value < 1:
+                raise ValueError
+            read_limits[key.lower()] = value
+        except ValueError as exc:
+            raise RuntimeError(f"{key} must be a positive integer") from exc
     legacy_enabled = os.getenv("ENABLE_LEGACY_YOOMONEY", "false").lower() == "true"
     legacy_wallet = os.getenv("YOOMONEY_WALLET", "").strip() or None
     legacy_secret = os.getenv("YOOMONEY_NOTIFICATION_SECRET", "").strip() or None
@@ -99,4 +111,5 @@ def get_settings() -> Settings:
         yoomoney_notification_secret=legacy_secret,
         admin_ids=admin_ids, media_path=media_path, max_pdf_bytes=pdf_size_mb * 1024 * 1024,
         subscription_reminder_hour=reminder_hour,
+        **read_limits,
     )

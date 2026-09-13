@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from protected_client import SessionClient as TestClient
 from PIL import Image
 
 from app.documents import DocumentStorage
@@ -109,7 +109,7 @@ def test_invalid_pdf_and_chunked_overflow_leave_no_files(project):
     _, material = create_material(client)
     for data in (b"", b"not a PDF", b"%PDF-1.7\nbroken", pdf_bytes(page_count=0)):
         assert upload(client, material, data).status_code == 422
-    with TestClient(create_app(replace(settings, max_pdf_bytes=100), db)) as limited:
+    with TestClient(create_app(replace(settings, max_pdf_bytes=100), db), database=db) as limited:
         assert upload(limited, material).status_code == 413
         assert upload(limited, material, iter([b"x" * 60, b"y" * 60])).status_code == 413
     assert not list(Path(settings.media_path).iterdir())

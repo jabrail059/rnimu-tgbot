@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi.testclient import TestClient
+from protected_client import SessionClient as TestClient
 from PIL import Image
 
 from app.config import Settings
@@ -57,7 +57,7 @@ def project(tmp_path):
         asyncio.run(db.upsert_user(uid, f"user{uid}"))
     with sqlite3.connect(settings.database_path) as connection:
         connection.execute("UPDATE users SET subscription_end=? WHERE user_id=2", ((datetime.now(UTC) + timedelta(days=10)).isoformat(),))
-    with TestClient(create_app(settings, db)) as client:
+    with TestClient(create_app(settings, db), database=db) as client:
         yield client, db, settings
 
 
@@ -149,7 +149,7 @@ def test_invalid_uploads_and_limits(project):
     path = f"/api/admin/materials/{material_id}/images"
     for data in (b"", b"<svg onload='alert(1)'/>", b"not an image"):
         assert client.post(path, headers=auth(1), content=data).status_code == 422
-    with TestClient(create_app(replace(settings, max_image_bytes=100), db)) as limited:
+    with TestClient(create_app(replace(settings, max_image_bytes=100), db), database=db) as limited:
         assert limited.post(path, headers=auth(1), content=photo_bytes()).status_code == 413
         assert limited.post(path, headers=auth(1), content=iter([b"x" * 60, b"y" * 60])).status_code == 413
     assert not list(Path(settings.media_path).iterdir())
@@ -201,7 +201,7 @@ def test_migration_preserves_existing_users_and_payments(tmp_path):
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT username, subscription_end FROM users").fetchone() == ("existing", end)
         assert connection.execute("SELECT id, amount, status, operation_id FROM payments").fetchone() == ("old", "120.00", "succeeded", "operation")
-        assert connection.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall() == [(1,), (2,), (3,)]
+        assert connection.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall() == [(1,), (2,), (3,), (4,)]
         assert connection.execute("SELECT COUNT(*) FROM categories").fetchone()[0] == 0
 
 
@@ -215,7 +215,7 @@ def test_yookassa_webhook_still_verifies_and_extends_once(project, monkeypatch):
     payload = {"event": "payment.succeeded", "object": {"id": "provider-1", "status": "succeeded"}}
     assert client.post("/api/payment/webhook", json=payload).status_code == 403
     bot = AsyncMock()
-    with TestClient(create_app(replace(settings, trust_proxy_headers=True, subscription_days=17), db, bot)) as webhook_client:
+    with TestClient(create_app(replace(settings, trust_proxy_headers=True, subscription_days=17), db, bot), database=db) as webhook_client:
         for _ in range(2):
             assert webhook_client.post("/api/payment/webhook", json=payload, headers={"X-Real-IP": "185.71.76.1"}).status_code == 200
     assert lookup.await_count == 2

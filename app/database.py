@@ -10,6 +10,8 @@ from decimal import Decimal
 
 import aiosqlite
 
+from app.access import SCHEMA as ACCESS_SCHEMA
+
 
 @dataclass(frozen=True)
 class PaymentActivation:
@@ -100,6 +102,8 @@ class Database:
               );
             """)
             await db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, ?)", (datetime.now(UTC).isoformat(),))
+            await db.executescript(ACCESS_SCHEMA)
+            await db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (4, ?)", (datetime.now(UTC).isoformat(),))
             await db.commit()
 
     async def categories(self) -> list[dict]:

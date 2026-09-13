@@ -15,23 +15,25 @@ let pdfObserver = null;
 let pdfPages = [];
 let pdfActive = 0;
 let readerScroll = 0;
+let heartbeatTimer = null;
 
 if (tg) { tg.ready(); tg.expand(); }
 
-async function api(path, {method = "GET", data, file, signal, binary = false} = {}) {
-  const headers = {Authorization: `tma ${initData}`};
+async function api(path, {method = "GET", data, file, signal, binary = false, extraHeaders = {}, keepalive = false} = {}) {
+  const headers = {...await window.courseAuth.headers(path, method), ...extraHeaders};
   if (data !== undefined) headers["Content-Type"] = "application/json";
   if (file) headers["Content-Type"] = "application/octet-stream";
   const response = await fetch(path, {method, headers, body: file || (data === undefined ? undefined : JSON.stringify(data)),
-    cache: "no-store", credentials: "omit", signal});
+    cache: "no-store", credentials: "omit", signal, keepalive});
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
     const messages = {401: "Сессия истекла. Закройте приложение и откройте его заново из бота.",
       403: "Доступ закрыт. Проверьте подписку или права администратора.",
       413: detail.detail || "Файл превышает допустимый размер.",
       422: detail.detail && detail.detail !== "Invalid request" ? detail.detail : "Проверьте название, текст и формат файла.", 429: "Слишком много запросов. Подождите минуту."};
-    const error = new Error(messages[response.status] || (response.status < 500 && detail.detail) || "Не удалось загрузить данные. Попробуйте ещё раз.");
+    const error = new Error((typeof detail.detail === "string" && detail.detail !== "Invalid request" && detail.detail) || messages[response.status] || "Не удалось загрузить данные. Попробуйте ещё раз.");
     error.status = response.status;
+    error.readingLimited = response.headers.get("X-Reading-Limited") === "1";
     throw error;
   }
   return binary ? response.blob() : response.json();
@@ -46,6 +48,12 @@ function clearPhoto() {
 }
 
 function clearReader() {
+  clearInterval(heartbeatTimer); heartbeatTimer = null;
+  const view = state.material?.view_token;
+  if (view && window.courseAuth.hasSession()) {
+    state.material.view_token = null;
+    api("/api/reader/close", {method: "POST", data: {view}, keepalive: true}).catch(() => {});
+  }
   clearPhoto();
   clearDocuments();
   byId("article-title").textContent = "";
@@ -84,6 +92,7 @@ function purgeContent() {
   byId("category-list").replaceChildren(); byId("material-list").replaceChildren();
   byId("editor-image-list").replaceChildren();
   byId("editor-document-list").replaceChildren();
+  byId("security-events").replaceChildren(); visible("security-panel", false);
   byId("category-title").textContent = "";
   byId("material-form").reset(); byId("category-form").reset();
   state.category = null; state.material = null;
@@ -95,6 +104,10 @@ function showError(error) {
   if (error.status === 401 || error.status === 403) {
     purgeContent(); state.managing = false; visible("admin-toggle", false);
     view("paywall");
+    state.locked = false; document.body.classList.remove("privacy-hidden"); visible("privacy-shield", false);
+  } else if (error.status === 409 || error.readingLimited) {
+    lockContent();
+    byId("privacy-shield").querySelector("p").textContent = error.message;
   }
   byId("error").textContent = error.message || "Ошибка соединения. Попробуйте ещё раз.";
   visible("error"); visible("loading", false);
@@ -124,7 +137,7 @@ function empty(list, message) {
 }
 
 async function refreshAccess() {
-  const session = await api("/api/session", {method: "POST", data: {init_data: initData}});
+  const session = window.courseAuth.hasSession() ? await api("/api/session") : await window.courseAuth.open(initData);
   state.session = session;
   byId("pdf-limit").textContent = `До ${Math.round(session.max_pdf_bytes / 1024 / 1024)} МБ на файл. Выберите PDF без пароля — страницы будут доступны для чтения с прокруткой.`;
   if (!session.is_admin) state.managing = false;
@@ -135,10 +148,9 @@ async function refreshAccess() {
     : session.is_admin ? "Доступ администратора" : "Подписка неактивна";
   visible("subscription");
   clearTimeout(expirationTimer);
-  if (session.is_active && !session.is_admin) {
-    const delay = Math.max(0, new Date(session.subscription_end).getTime() - Date.now());
-    expirationTimer = setTimeout(checkExpiration, Math.min(delay + 100, 2147483647));
-  }
+  const sessionDelay = (session.session_expires - session.server_time) * 1000;
+  const subscriptionDelay = session.is_active && !session.is_admin ? new Date(session.subscription_end).getTime() - session.server_time * 1000 : Infinity;
+  expirationTimer = setTimeout(checkExpiration, Math.max(0, Math.min(sessionDelay, subscriptionDelay, 2147483647)) + 100);
   if (!session.is_active && !session.is_admin) { purgeContent(); view("paywall"); return false; }
   return true;
 }
@@ -160,6 +172,7 @@ async function loadCategories() {
   byId("catalog-title").textContent = state.managing ? "Управление курсом" : "Разделы";
   byId("catalog-hint").textContent = state.managing ? "Создавайте разделы и наполняйте их материалами." : "Выберите раздел, чтобы перейти к материалам.";
   visible("add-category", state.managing);
+  visible("security-panel", state.managing);
   const list = byId("category-list"); list.replaceChildren();
   data.categories.forEach(item => list.append(card(item.title, `Материалов: ${item.material_count}`, () => loadMaterials(item.id))));
   empty(list, state.managing ? "Создайте первый раздел — здесь начнётся ваш курс." : "Материалы скоро появятся. Автор уже готовит курс.");
@@ -180,10 +193,11 @@ async function loadMaterials(categoryId) {
 async function openArticle(id, photoIndex = 0) {
   const data = await api(`/api/materials/${id}`);
   clearReader();
-  state.material = {id: data.id, images: data.images, documents: data.documents};
+  state.material = {id: data.id, images: data.images, documents: data.documents, view_token: data.view_token};
   state.photoIndex = Math.max(0, Math.min(photoIndex, data.images.length - 1));
   view("article");
   if (state.locked) return;
+  heartbeatTimer = setInterval(heartbeat, 20_000);
   byId("article-title").textContent = data.title;
   byId("article-content").textContent = data.text || "";
   visible("gallery", data.images.length > 0);
@@ -201,7 +215,7 @@ async function loadPhoto(index) {
   visible("photo-loading");
   let url;
   try {
-    const blob = await api(`/api/images/${photos[index].id}`, {binary: true, signal: photoRequest.signal});
+    const blob = await pageBlob("image", photos[index].id, 1, photoRequest.signal);
     url = URL.createObjectURL(blob);
     const img = new Image(); img.src = url; await img.decode();
     if (version !== photoVersion || state.locked || state.view !== "article") return;
@@ -211,6 +225,26 @@ async function loadPhoto(index) {
     visible("photo");
   } catch (error) { if (version === photoVersion) showError(error); }
   finally { if (url) URL.revokeObjectURL(url); if (version === photoVersion) visible("photo-loading", false); }
+}
+
+async function heartbeat() {
+  const view = state.material?.view_token;
+  if (!view || state.locked || document.hidden) return;
+  try { await api("/api/reader/heartbeat", {method: "POST", data: {view}}); }
+  catch (error) {
+    if (state.material?.view_token !== view) return;
+    lockContent();
+    byId("privacy-shield").querySelector("p").textContent = "Не удалось подтвердить доступ. Нажмите «Продолжить», чтобы повторить.";
+    showError(error);
+  }
+}
+
+async function pageBlob(kind, resourceId, page, signal) {
+  const view = state.material?.view_token;
+  if (!view || state.locked || signal.aborted) throw new DOMException("Просмотр завершён", "AbortError");
+  const {ticket} = await api("/api/reader/ticket", {method: "POST", data: {view, kind, resource_id: resourceId, page}, signal});
+  const path = kind === "image" ? `/api/images/${resourceId}` : `/api/documents/${resourceId}/pages/${page}`;
+  return api(path, {binary: true, signal, extraHeaders: {"X-Read-View": view, "X-Page-Ticket": ticket}});
 }
 
 function clearDocuments() {
@@ -241,7 +275,7 @@ function renderDocuments(documents) {
       }
     }
     pumpPDF();
-  }, {rootMargin: "600px 0px"});
+  }, {rootMargin: "300px 0px"});
   for (const document of documents) {
     const heading = window.document.createElement("h3"); heading.textContent = document.title;
     const hint = window.document.createElement("p"); hint.className = "muted";
@@ -282,7 +316,7 @@ async function loadPDFPage(page) {
   let url;
   page.status.textContent = "Загружаем страницу…";
   try {
-    const blob = await api(`/api/documents/${page.documentId}/pages/${page.number}`, {binary: true, signal: page.request.signal});
+    const blob = await pageBlob("document", page.documentId, page.number, page.request.signal);
     url = URL.createObjectURL(blob);
     const img = new Image(); img.src = url; await img.decode();
     if (page.version !== documentVersion || state.locked || !page.nearby || state.view !== "article") return;
@@ -292,7 +326,7 @@ async function loadPDFPage(page) {
   } catch (error) {
     if (error.name !== "AbortError" && page.version === documentVersion) {
       page.failed = true; page.status.textContent = error.message; page.retry.hidden = false;
-      if ([401, 403].includes(error.status)) showError(error);
+      if ([401, 403, 409].includes(error.status) || error.readingLimited) showError(error);
     }
   } finally {
     if (url) URL.revokeObjectURL(url);
@@ -300,11 +334,13 @@ async function loadPDFPage(page) {
   }
 }
 
-function uploadPDF(materialId, file, onProgress) {
+async function uploadPDF(materialId, file, onProgress) {
+  const path = `/api/admin/materials/${materialId}/documents?title=${encodeURIComponent(file.name.slice(0, 300))}`;
+  const headers = await window.courseAuth.headers(path, "POST");
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
-    request.open("POST", `/api/admin/materials/${materialId}/documents?title=${encodeURIComponent(file.name.slice(0, 300))}`);
-    request.setRequestHeader("Authorization", `tma ${initData}`);
+    request.open("POST", path);
+    for (const [name, value] of Object.entries(headers)) request.setRequestHeader(name, value);
     request.setRequestHeader("Content-Type", "application/pdf");
     request.upload.onprogress = event => { if (event.lengthComputable) onProgress(event.loaded / event.total); };
     request.onload = () => {
@@ -397,6 +433,26 @@ byId("open-bot").onclick = () => tg?.close();
 byId("refresh-session").onclick = () => run(checkSession);
 byId("admin-toggle").onclick = () => run(async () => { if (allowLeave()) { state.managing = !state.managing; await loadCategories(); } });
 byId("add-category").onclick = () => run(() => editCategory());
+byId("security-refresh").onclick = () => run(async () => {
+  const {events} = await api("/api/admin/security/events");
+  const list = byId("security-events"); list.replaceChildren();
+  const labels = {session_opened: "Открыт сеанс", launch_replay: "Повторный вход с чужим ключом",
+    reading_limit_60: "Превышен минутный лимит", reading_limit_3600: "Превышен часовой лимит",
+    reading_limit_86400: "Превышен суточный лимит", admin_revoke: "Администратор завершил сеанс",
+    admin_unblock: "Администратор снял ограничение"};
+  for (const event of events) {
+    const row = document.createElement("p"); row.className = "status";
+    row.textContent = `ID ${event.user_id} · ${labels[event.event] || event.event}\n${new Date(event.at * 1000).toLocaleString("ru-RU", {timeZone: "Europe/Moscow"})} МСК`;
+    list.append(row);
+  }
+  empty(list, "Событий пока нет.");
+});
+for (const action of ["revoke", "unblock"]) byId(`security-${action}`).onclick = () => run(async () => {
+  const id = byId("security-user").value.trim();
+  if (!/^[1-9][0-9]{0,15}$/.test(id) || !Number.isSafeInteger(Number(id))) throw new Error("Введите числовой Telegram ID пользователя.");
+  await api(`/api/admin/security/users/${id}/${action}`, {method: "POST"});
+  notice(action === "revoke" ? "Сеанс пользователя завершён." : "Ограничение чтения снято.");
+});
 byId("rename-category").onclick = () => run(() => editCategory(true));
 byId("cancel-category").onclick = () => run(goBack);
 byId("add-material").onclick = () => run(() => editMaterial());
@@ -545,4 +601,9 @@ document.addEventListener("keydown", event => {
   if (event.key === "PrintScreen") { event.preventDefault(); lockContent(); }
 });
 window.addEventListener("beforeunload", event => { if (state.dirty) { event.preventDefault(); event.returnValue = ""; } });
+// Keep an active editor/upload session alive without continuing a hidden reader.
+setInterval(async () => {
+  if (!window.courseAuth.hasSession() || !state.session || state.locked || document.hidden || state.view === "article") return;
+  try { await api("/api/session"); } catch (error) { showError(error); }
+}, 60_000);
 run(async () => { if (!initData) throw new Error("Откройте это приложение из Telegram через кнопку в боте."); await checkSession(); });

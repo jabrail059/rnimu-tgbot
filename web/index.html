@@ -6,6 +6,7 @@
   <title>Патанатомия · @eucliris</title>
   <link rel="stylesheet" href="/static/styles.css">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/static/auth.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -30,6 +31,17 @@
       <div class="section-heading"><h2 id="catalog-title">Разделы</h2><button id="add-category" hidden>+ Раздел</button></div>
       <p id="catalog-hint" class="muted">Выберите раздел, чтобы перейти к материалам.</p>
       <div id="category-list" class="card-list"></div>
+      <details id="security-panel" class="panel" hidden>
+        <summary>Контроль доступа</summary>
+        <label for="security-user">Telegram ID пользователя</label>
+        <input id="security-user" inputmode="numeric" autocomplete="off" placeholder="Например, 123456789">
+        <div class="actions">
+          <button id="security-revoke" class="danger">Завершить сеанс</button>
+          <button id="security-unblock" class="secondary">Снять ограничение чтения</button>
+          <button id="security-refresh" class="secondary">Журнал событий</button>
+        </div>
+        <div id="security-events" class="card-list"></div>
+      </details>
     </section>
     <section id="materials" hidden>
       <p class="eyebrow">РАЗДЕЛ</p><h2 id="category-title"></h2>

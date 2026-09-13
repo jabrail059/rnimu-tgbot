@@ -25,8 +25,7 @@ def test_menu_has_subscription_author_and_payment_buttons(project, monkeypatch):
     keyboard = message.answer.call_args.kwargs["reply_markup"]
     buttons = [button for row in keyboard.inline_keyboard for button in row]
     assert any(button.callback_data == "buy" for button in buttons)
-    assert any(button.callback_data == "menu" and button.text == "Главное меню" for button in buttons)
-    assert all(button.callback_data != "course_info" for button in buttons)
+    assert all(button.callback_data not in {"menu", "course_info"} for button in buttons)
     assert any(button.web_app for button in buttons)
     asyncio.run(module.show_user_id(message))
     assert "Telegram ID: 2" in message.answer.call_args.args[0]

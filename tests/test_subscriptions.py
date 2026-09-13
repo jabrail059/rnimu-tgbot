@@ -94,7 +94,7 @@ def test_daily_reminders_survive_restart_and_stop_at_expiry(project):
     assert "3 дней" in texts[0] and "2 дней" in texts[1] and "суток" in texts[2]
     assert all(call.args[0] == 2 for call in bot.send_message.call_args_list)
     buttons = [button for row in bot.send_message.call_args.kwargs["reply_markup"].inline_keyboard for button in row]
-    assert [button.callback_data for button in buttons] == ["buy", "menu"]
+    assert [button.callback_data for button in buttons] == ["buy"]
 
 
 def test_renewal_cancels_old_reminders_and_later_starts_new_cycle(project):

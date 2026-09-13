@@ -38,7 +38,6 @@ def main_keyboard() -> InlineKeyboardMarkup:
     if settings.enable_legacy_yoomoney:
         rows.append([InlineKeyboardButton(text="Оплатить через старый YooMoney (временно)", callback_data="buy_legacy")])
     rows.append([InlineKeyboardButton(text="Открыть приложение", web_app=WebAppInfo(url=settings.public_base_url))])
-    rows.append([InlineKeyboardButton(text="Главное меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -52,7 +51,7 @@ async def start(message: Message) -> None:
 
 async def send_menu(message: Message, user) -> None:
     if message.chat.type != "private":
-        await message.answer("Откройте личный чат с ботом и отправьте /menu.")
+        await message.answer("Откройте личный чат с ботом и отправьте /start.")
         return
     await database.upsert_user(user.id, user.username)
     subscription_end = await database.subscription_end(user.id)
@@ -78,6 +77,7 @@ async def show_user_id(message: Message) -> None:
 
 @dp.callback_query(F.data.in_({"menu", "course_info"}))
 async def menu_callback(callback: CallbackQuery) -> None:
+    # Previously sent keyboards still contain these callbacks.
     await callback.answer()
     if callback.message:
         await send_menu(callback.message, callback.from_user)
@@ -138,7 +138,6 @@ async def run() -> None:
         await database.initialize()
         await bot.set_my_commands([
             BotCommand(command="start", description="Начать знакомство с курсом"),
-            BotCommand(command="menu", description="Меню и статус подписки"),
             BotCommand(command="id", description="Узнать свой Telegram ID"),
         ])
         await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Материалы", web_app=WebAppInfo(url=settings.public_base_url)))

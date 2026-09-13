@@ -40,7 +40,6 @@ async def send_due_reminders(database: Database, bot, settings: Settings, *, now
         remaining = "не больше суток" if days == 1 else f"не больше {days} дней"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Продлить подписку", callback_data="buy")],
-            [InlineKeyboardButton(text="Главное меню", callback_data="menu")],
         ])
         try:
             await bot.send_message(user_id,

@@ -86,6 +86,9 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
         elif request.url.path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-cache, must-revalidate"
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Download-Options"] = "noopen"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), display-capture=()"
         response.headers["Content-Security-Policy"] = (

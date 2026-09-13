@@ -14,6 +14,7 @@ let documentVersion = 0;
 let pdfObserver = null;
 let pdfPages = [];
 let pdfActive = 0;
+let pdfScale = 1;
 let readerScroll = 0;
 let heartbeatTimer = null;
 
@@ -258,10 +259,29 @@ function clearDocuments() {
   byId("documents").replaceChildren(); visible("documents", false);
 }
 
+function setPdfScale(scale) {
+  pdfScale = scale;
+  const pages = byId("documents").querySelectorAll(".pdf-pages");
+  pages.forEach(item => item.dataset.scale = String(scale));
+  byId("documents").querySelectorAll("[data-pdf-scale]").forEach(button => {
+    button.setAttribute("aria-pressed", String(Number(button.dataset.pdfScale) === scale));
+  });
+}
+
 function renderDocuments(documents) {
   clearDocuments();
   if (!documents.length || state.locked) return;
   const container = byId("documents"); visible("documents");
+  const controls = window.document.createElement("div"); controls.className = "pdf-controls";
+  const label = window.document.createElement("span"); label.textContent = "Размер текста";
+  controls.append(label);
+  for (const [scale, title] of [[1, "Маленький"], [1.3, "Средний"], [1.65, "Большой"]]) {
+    const button = window.document.createElement("button"); button.type = "button";
+    button.className = "secondary pdf-scale"; button.textContent = title;
+    button.dataset.pdfScale = String(scale); button.setAttribute("aria-pressed", String(scale === pdfScale));
+    button.onclick = () => setPdfScale(scale); controls.append(button);
+  }
+  container.append(controls);
   // Only nearby pages have bitmaps. Scrolling away releases pixels and aborts
   // pending requests; returning re-fetches through the authenticated API.
   pdfObserver = new IntersectionObserver(entries => {
@@ -281,6 +301,7 @@ function renderDocuments(documents) {
     const hint = window.document.createElement("p"); hint.className = "muted";
     hint.textContent = `${document.page_sizes.length} стр. · Листайте вниз для чтения`;
     const pages = window.document.createElement("div"); pages.className = "pdf-pages";
+    pages.dataset.scale = String(pdfScale);
     container.append(heading, hint, pages);
     document.page_sizes.forEach(([width, height], index) => {
       const wrapper = window.document.createElement("div"); wrapper.className = "pdf-page";

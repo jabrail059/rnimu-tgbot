@@ -105,6 +105,7 @@ class Database:
             await db.executescript(ACCESS_SCHEMA)
             await db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (4, ?)", (datetime.now(UTC).isoformat(),))
             await db.commit()
+        os.chmod(self.path, 0o600)
 
     async def categories(self) -> list[dict]:
         async with self._connect() as db:

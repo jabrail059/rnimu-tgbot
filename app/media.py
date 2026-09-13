@@ -22,6 +22,7 @@ class MediaStorage:
         if self.directory.is_relative_to(public_directory):
             raise ValueError("Media storage must be outside web/")
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.directory.chmod(0o700)
 
     def _path(self, filename: str) -> Path:
         # Earlier releases stored original PNG/WebP files with UUID names.

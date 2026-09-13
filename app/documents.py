@@ -56,7 +56,7 @@ class DocumentStorage(MediaStorage):
                 if not len(document):
                     raise InvalidPDF("В PDF нет страниц.")
                 return [self._size(document.get_page_size(index)) for index in range(len(document))]
-        except pdfium.PdfiumError as exc:
+        except (pdfium.PdfiumError, OSError, RuntimeError, ValueError) as exc:
             raise InvalidPDF("Не удалось прочитать PDF. Проверьте файл и снимите пароль, если он установлен.") from exc
 
     def render(self, filename: str, page_index: int) -> bytes:
@@ -76,5 +76,5 @@ class DocumentStorage(MediaStorage):
                             return result.getvalue()
                         finally:
                             photo.close()
-        except pdfium.PdfiumError as exc:
+        except (pdfium.PdfiumError, OSError, RuntimeError, ValueError) as exc:
             raise InvalidPDF("Не удалось отобразить страницу PDF.") from exc

@@ -49,7 +49,7 @@ def get_settings() -> Settings:
     if parsed_url.scheme != "https" or not parsed_url.netloc:
         raise RuntimeError("PUBLIC_BASE_URL must be an absolute HTTPS URL")
     try:
-        price = Decimal(os.getenv("SUBSCRIPTION_PRICE", "120.00")).quantize(Decimal("0.01"))
+        price = Decimal(os.getenv("SUBSCRIPTION_PRICE", "200.00")).quantize(Decimal("0.01"))
         days = int(os.getenv("SUBSCRIPTION_DAYS", "30"))
     except (InvalidOperation, ValueError) as exc:
         raise RuntimeError("SUBSCRIPTION_PRICE or SUBSCRIPTION_DAYS is invalid") from exc

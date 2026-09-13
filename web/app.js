@@ -10,6 +10,11 @@ let photoRequest = null;
 let photoVersion = 0;
 let expirationTimer = null;
 let privacyVersion = 0;
+let documentVersion = 0;
+let pdfObserver = null;
+let pdfPages = [];
+let pdfActive = 0;
+let readerScroll = 0;
 
 if (tg) { tg.ready(); tg.expand(); }
 
@@ -23,8 +28,8 @@ async function api(path, {method = "GET", data, file, signal, binary = false} = 
     const detail = await response.json().catch(() => ({}));
     const messages = {401: "Сессия истекла. Закройте приложение и откройте его заново из бота.",
       403: "Доступ закрыт. Проверьте подписку или права администратора.",
-      413: "Фото слишком большое. Максимальный размер — 10 МБ.",
-      422: "Проверьте название, текст и формат фотографии.", 429: "Слишком много запросов. Подождите минуту."};
+      413: detail.detail || "Файл превышает допустимый размер.",
+      422: detail.detail && detail.detail !== "Invalid request" ? detail.detail : "Проверьте название, текст и формат файла.", 429: "Слишком много запросов. Подождите минуту."};
     const error = new Error(messages[response.status] || (response.status < 500 && detail.detail) || "Не удалось загрузить данные. Попробуйте ещё раз.");
     error.status = response.status;
     throw error;
@@ -42,9 +47,9 @@ function clearPhoto() {
 
 function clearReader() {
   clearPhoto();
+  clearDocuments();
   byId("article-title").textContent = "";
   byId("article-content").textContent = "";
-  byId("reader-mark").textContent = "";
 }
 
 function setDirty(value) {
@@ -63,6 +68,8 @@ function view(id) {
   if (id !== "article") clearReader();
   views.forEach(name => visible(name, name === id));
   state.view = id;
+  document.body.classList.toggle("reading", id === "article");
+  visible("fullscreen", Boolean(id === "article" && tg?.isVersionAtLeast?.("8.0") && tg?.requestFullscreen));
   visible("loading", false);
   const canGoBack = !["catalog", "paywall"].includes(id);
   visible("back", canGoBack);
@@ -76,6 +83,7 @@ function purgeContent() {
   clearReader();
   byId("category-list").replaceChildren(); byId("material-list").replaceChildren();
   byId("editor-image-list").replaceChildren();
+  byId("editor-document-list").replaceChildren();
   byId("category-title").textContent = "";
   byId("material-form").reset(); byId("category-form").reset();
   state.category = null; state.material = null;
@@ -118,6 +126,7 @@ function empty(list, message) {
 async function refreshAccess() {
   const session = await api("/api/session", {method: "POST", data: {init_data: initData}});
   state.session = session;
+  byId("pdf-limit").textContent = `До ${Math.round(session.max_pdf_bytes / 1024 / 1024)} МБ на файл. Выберите PDF без пароля — страницы будут доступны для чтения с прокруткой.`;
   if (!session.is_admin) state.managing = false;
   visible("admin-toggle", session.is_admin);
   byId("price").textContent = `Доступ ко всем материалам — ${Number(session.price).toLocaleString("ru-RU")} ₽ на ${session.days} дней.`;
@@ -163,21 +172,22 @@ async function loadMaterials(categoryId) {
   byId("category-title").textContent = data.category.title;
   visible("category-actions", state.managing);
   const list = byId("material-list"); list.replaceChildren();
-  data.materials.forEach(item => list.append(card(item.title, `Фотографий: ${item.image_count}`, () => state.managing ? editMaterial(item.id) : openArticle(item.id))));
+  data.materials.forEach(item => list.append(card(item.title, `Фотографий: ${item.image_count} · PDF: ${item.document_count}`, () => state.managing ? editMaterial(item.id) : openArticle(item.id))));
   empty(list, state.managing ? "Добавьте первый материал в этот раздел." : "В этом разделе пока нет материалов.");
   view("materials");
 }
 
 async function openArticle(id, photoIndex = 0) {
   const data = await api(`/api/materials/${id}`);
-  state.material = {id: data.id, images: data.images};
+  clearReader();
+  state.material = {id: data.id, images: data.images, documents: data.documents};
   state.photoIndex = Math.max(0, Math.min(photoIndex, data.images.length - 1));
   view("article");
   if (state.locked) return;
   byId("article-title").textContent = data.title;
-  byId("article-content").textContent = data.text || "К этому материалу пока не добавлен текст.";
-  byId("reader-mark").textContent = `Личный доступ · ID ${state.session.user_id}`;
+  byId("article-content").textContent = data.text || "";
   visible("gallery", data.images.length > 0);
+  renderDocuments(data.documents);
   if (data.images.length) await loadPhoto(state.photoIndex);
 }
 
@@ -188,8 +198,6 @@ async function loadPhoto(index) {
   const version = photoVersion;
   photoRequest = new AbortController();
   byId("photo-counter").textContent = `${index + 1} / ${photos.length}`;
-  byId("prev-photo").disabled = index === 0;
-  byId("next-photo").disabled = index === photos.length - 1;
   visible("photo-loading");
   let url;
   try {
@@ -203,6 +211,115 @@ async function loadPhoto(index) {
     visible("photo");
   } catch (error) { if (version === photoVersion) showError(error); }
   finally { if (url) URL.revokeObjectURL(url); if (version === photoVersion) visible("photo-loading", false); }
+}
+
+function clearDocuments() {
+  documentVersion += 1;
+  pdfObserver?.disconnect(); pdfObserver = null;
+  for (const page of pdfPages) {
+    page.request?.abort();
+    page.canvas.width = 1; page.canvas.height = 1;
+  }
+  pdfPages = [];
+  byId("documents").replaceChildren(); visible("documents", false);
+}
+
+function renderDocuments(documents) {
+  clearDocuments();
+  if (!documents.length || state.locked) return;
+  const container = byId("documents"); visible("documents");
+  // Only nearby pages have bitmaps. Scrolling away releases pixels and aborts
+  // pending requests; returning re-fetches through the authenticated API.
+  pdfObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      const page = entry.target.pdfPage;
+      page.nearby = entry.isIntersecting;
+      if (!page.nearby) {
+        page.request?.abort(); page.loaded = false;
+        page.canvas.width = 1; page.canvas.height = 1; page.canvas.hidden = true;
+        page.placeholder.hidden = false;
+      }
+    }
+    pumpPDF();
+  }, {rootMargin: "600px 0px"});
+  for (const document of documents) {
+    const heading = window.document.createElement("h3"); heading.textContent = document.title;
+    const hint = window.document.createElement("p"); hint.className = "muted";
+    hint.textContent = `${document.page_sizes.length} стр. · Листайте вниз для чтения`;
+    const pages = window.document.createElement("div"); pages.className = "pdf-pages";
+    container.append(heading, hint, pages);
+    document.page_sizes.forEach(([width, height], index) => {
+      const wrapper = window.document.createElement("div"); wrapper.className = "pdf-page";
+      const label = window.document.createElement("p"); label.className = "pdf-page-label";
+      label.textContent = `Страница ${index + 1} из ${document.page_sizes.length}`;
+      const sheet = window.document.createElement("div"); sheet.className = "pdf-sheet";
+      sheet.style.aspectRatio = `${width} / ${height}`;
+      const canvas = window.document.createElement("canvas"); canvas.width = 1; canvas.height = 1; canvas.hidden = true;
+      canvas.setAttribute("role", "img"); canvas.setAttribute("aria-label", label.textContent);
+      const placeholder = window.document.createElement("div"); placeholder.className = "pdf-placeholder";
+      const status = window.document.createElement("span"); status.textContent = "Загружаем страницу…"; status.setAttribute("role", "status");
+      const retry = window.document.createElement("button"); retry.textContent = "Повторить"; retry.hidden = true;
+      const page = {documentId: document.id, number: index + 1, canvas, placeholder, status, retry,
+        nearby: false, loaded: false, request: null, failed: false, version: documentVersion};
+      retry.onclick = () => { page.failed = false; retry.hidden = true; pumpPDF(); };
+      placeholder.append(status, retry); sheet.append(canvas, placeholder); wrapper.append(label, sheet); pages.append(wrapper);
+      wrapper.pdfPage = page; pdfPages.push(page); pdfObserver.observe(wrapper);
+    });
+  }
+}
+
+function pumpPDF() {
+  if (state.locked || state.view !== "article") return;
+  while (pdfActive < 2) {
+    const page = pdfPages.find(item => item.nearby && !item.loaded && !item.request && !item.failed);
+    if (!page) return;
+    page.request = new AbortController(); pdfActive += 1;
+    loadPDFPage(page);
+  }
+}
+
+async function loadPDFPage(page) {
+  let url;
+  page.status.textContent = "Загружаем страницу…";
+  try {
+    const blob = await api(`/api/documents/${page.documentId}/pages/${page.number}`, {binary: true, signal: page.request.signal});
+    url = URL.createObjectURL(blob);
+    const img = new Image(); img.src = url; await img.decode();
+    if (page.version !== documentVersion || state.locked || !page.nearby || state.view !== "article") return;
+    page.canvas.width = img.naturalWidth; page.canvas.height = img.naturalHeight;
+    page.canvas.getContext("2d").drawImage(img, 0, 0);
+    page.canvas.hidden = false; page.placeholder.hidden = true; page.loaded = true;
+  } catch (error) {
+    if (error.name !== "AbortError" && page.version === documentVersion) {
+      page.failed = true; page.status.textContent = error.message; page.retry.hidden = false;
+      if ([401, 403].includes(error.status)) showError(error);
+    }
+  } finally {
+    if (url) URL.revokeObjectURL(url);
+    page.request = null; pdfActive -= 1; pumpPDF();
+  }
+}
+
+function uploadPDF(materialId, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", `/api/admin/materials/${materialId}/documents?title=${encodeURIComponent(file.name.slice(0, 300))}`);
+    request.setRequestHeader("Authorization", `tma ${initData}`);
+    request.setRequestHeader("Content-Type", "application/pdf");
+    request.upload.onprogress = event => { if (event.lengthComputable) onProgress(event.loaded / event.total); };
+    request.onload = () => {
+      let result;
+      try { result = JSON.parse(request.responseText); } catch { result = {}; }
+      if (request.status >= 200 && request.status < 300) resolve(result);
+      else {
+        const error = new Error(typeof result.detail === "string" ? result.detail : "Не удалось загрузить PDF. Попробуйте ещё раз.");
+        error.status = request.status; reject(error);
+      }
+    };
+    request.onerror = () => reject(new Error("Соединение прервалось. Повторите загрузку PDF."));
+    request.onabort = () => reject(new Error("Загрузка PDF отменена."));
+    request.send(file);
+  });
 }
 
 function editCategory(rename = false) {
@@ -246,6 +363,20 @@ function renderEditorImages() {
     row.append(label, preview, remove); list.append(row);
   });
   empty(list, "Пока нет фотографий. Можно выбрать сразу несколько файлов.");
+  const documents = byId("editor-document-list"); documents.replaceChildren();
+  (state.material?.documents || []).forEach(item => {
+    const row = document.createElement("div"); row.className = "document-row";
+    const label = document.createElement("span");
+    label.textContent = `${item.title} · ${item.page_sizes.length} стр. · ${(item.size_bytes / 1024 / 1024).toFixed(1)} МБ`;
+    const remove = document.createElement("button"); remove.className = "danger"; remove.textContent = "Удалить";
+    remove.onclick = () => run(async () => {
+      if (!window.confirm(`Удалить PDF «${item.title}»?`)) return;
+      await api(`/api/admin/documents/${item.id}`, {method: "DELETE"});
+      state.material.documents = state.material.documents.filter(document => document.id !== item.id); renderEditorImages();
+    });
+    row.append(label, remove); documents.append(row);
+  });
+  empty(documents, "Здесь появятся загруженные PDF.");
 }
 
 async function goBack() {
@@ -257,6 +388,10 @@ async function goBack() {
 }
 
 byId("back").onclick = () => run(goBack);
+byId("fullscreen").onclick = () => {
+  try { tg.isFullscreen ? tg.exitFullscreen() : tg.requestFullscreen(); }
+  catch { notice("Полноэкранный режим недоступен в этой версии Telegram."); }
+};
 tg?.BackButton?.onClick(() => run(goBack));
 byId("open-bot").onclick = () => tg?.close();
 byId("refresh-session").onclick = () => run(checkSession);
@@ -288,11 +423,11 @@ byId("material-form").onsubmit = event => { event.preventDefault(); run(async ()
 for (const id of ["category-name", "material-category", "material-title", "material-text"]) byId(id).addEventListener("input", () => setDirty(true));
 
 byId("delete-category").onclick = () => run(async () => {
-  if (!window.confirm("Удалить раздел вместе со всеми материалами и фотографиями? Отменить это действие нельзя.")) return;
+  if (!window.confirm("Удалить раздел вместе со всеми материалами, фотографиями и PDF? Отменить это действие нельзя.")) return;
   await api(`/api/admin/categories/${state.category.id}`, {method: "DELETE"}); await loadCategories(); notice("Раздел удалён.");
 });
 byId("delete-material").onclick = () => run(async () => {
-  if (!window.confirm("Удалить материал и все его фотографии? Отменить это действие нельзя.")) return;
+  if (!window.confirm("Удалить материал, его фотографии и PDF? Отменить это действие нельзя.")) return;
   await api(`/api/admin/materials/${state.material.id}`, {method: "DELETE"}); setDirty(false);
   await loadMaterials(state.category.id); notice("Материал удалён.");
 });
@@ -316,8 +451,38 @@ byId("image-files").onchange = event => {
     } finally { event.target.value = ""; visible("upload-status", false); }
   });
 };
-byId("prev-photo").onclick = () => loadPhoto(state.photoIndex - 1);
-byId("next-photo").onclick = () => loadPhoto(state.photoIndex + 1);
+byId("pdf-files").onchange = event => {
+  const files = Array.from(event.target.files || []); const materialId = state.material?.id;
+  run(async () => {
+    if (!materialId || !files.length) return;
+    visible("pdf-upload-status"); visible("pdf-upload-progress");
+    const failures = []; let uploaded = 0;
+    const wasDirty = state.dirty; setDirty(true);
+    try {
+      for (const [index, file] of files.entries()) {
+        if (file.size > state.session.max_pdf_bytes) {
+          failures.push(`${file.name}: больше ${Math.round(state.session.max_pdf_bytes / 1024 / 1024)} МБ`); continue;
+        }
+        const progress = value => {
+          byId("pdf-upload-progress").value = value * 100;
+          byId("pdf-upload-status").textContent = value < 1
+            ? `Загружаем PDF ${index + 1} из ${files.length}: ${Math.round(value * 100)}%`
+            : `PDF ${index + 1} из ${files.length}: проверяем страницы…`;
+        };
+        progress(0);
+        try { await uploadPDF(materialId, file, progress); uploaded += 1; }
+        catch (error) { if ([401, 403, 404].includes(error.status)) throw error; failures.push(`${file.name}: ${error.message}`); }
+      }
+      const material = await api(`/api/materials/${materialId}`);
+      state.material.documents = material.documents; renderEditorImages();
+      notice(`Добавлено PDF: ${uploaded} из ${files.length}.`);
+      if (failures.length) throw new Error(failures.join("\n"));
+    } finally {
+      setDirty(wasDirty); event.target.value = "";
+      visible("pdf-upload-status", false); visible("pdf-upload-progress", false);
+    }
+  });
+};
 let swipe = null;
 byId("photo-stage").addEventListener("pointerdown", event => { if (event.isPrimary) swipe = {x: event.clientX, y: event.clientY}; });
 byId("photo-stage").addEventListener("pointerup", event => {
@@ -332,6 +497,7 @@ byId("photo-stage").addEventListener("keydown", event => {
 
 function lockContent() {
   if (!state.session || state.view === "paywall") return;
+  if (!state.locked) readerScroll = window.scrollY;
   privacyVersion += 1;
   state.locked = true; document.body.classList.add("privacy-hidden"); visible("privacy-shield"); clearReader();
 }
@@ -343,7 +509,10 @@ async function resumeContent() {
     const allowed = await refreshAccess();
     if (version !== privacyVersion || document.hidden || tg?.isActive === false) return;
     state.locked = false;
-    if (allowed && state.view === "article" && state.material) await openArticle(state.material.id, state.photoIndex);
+    if (allowed && state.view === "article" && state.material) {
+      await openArticle(state.material.id, state.photoIndex);
+      window.scrollTo(0, readerScroll);
+    }
     if (state.locked || version !== privacyVersion || document.hidden || tg?.isActive === false) return;
     document.body.classList.remove("privacy-hidden"); visible("privacy-shield", false);
   } catch (error) {
@@ -361,7 +530,11 @@ window.addEventListener("focus", resumeContent);
 window.addEventListener("pagehide", lockContent);
 window.addEventListener("pageshow", resumeContent);
 document.addEventListener("visibilitychange", () => document.hidden ? lockContent() : resumeContent());
-if (tg?.isVersionAtLeast?.("8.0")) { tg.onEvent("deactivated", lockContent); tg.onEvent("activated", resumeContent); }
+if (tg?.isVersionAtLeast?.("8.0")) {
+  tg.onEvent("deactivated", lockContent); tg.onEvent("activated", resumeContent);
+  tg.onEvent("fullscreenChanged", () => { byId("fullscreen").textContent = tg.isFullscreen ? "Свернуть экран" : "На весь экран"; });
+  tg.onEvent("fullscreenFailed", () => notice("Полноэкранный режим недоступен на этом устройстве."));
+}
 byId("resume").onclick = resumeContent;
 for (const eventName of ["copy", "cut", "contextmenu", "dragstart"]) {
   document.addEventListener(eventName, event => { if (event.target.closest?.(".protected")) event.preventDefault(); });

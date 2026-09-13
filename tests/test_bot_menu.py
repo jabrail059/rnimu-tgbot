@@ -25,7 +25,8 @@ def test_menu_has_subscription_author_and_payment_buttons(project, monkeypatch):
     keyboard = message.answer.call_args.kwargs["reply_markup"]
     buttons = [button for row in keyboard.inline_keyboard for button in row]
     assert any(button.callback_data == "buy" for button in buttons)
-    assert any(button.callback_data == "course_info" for button in buttons)
+    assert any(button.callback_data == "menu" and button.text == "Главное меню" for button in buttons)
+    assert all(button.callback_data != "course_info" for button in buttons)
     assert any(button.web_app for button in buttons)
     asyncio.run(module.show_user_id(message))
     assert "Telegram ID: 2" in message.answer.call_args.args[0]
@@ -44,3 +45,13 @@ def test_checkout_keeps_yookassa_flow_and_updated_label(project, monkeypatch):
     assert keyboard.inline_keyboard[0][0].text == "Перейти к оплате"
     assert keyboard.inline_keyboard[0][0].url == payment.confirmation_url
     assert asyncio.run(db.subscription_end(3)) is None
+
+
+def test_menu_callback_uses_clicking_user_not_bot(project, monkeypatch):
+    module = load_bot(monkeypatch, project)
+    message = SimpleNamespace(from_user=SimpleNamespace(id=999, username="bot"),
+                              chat=SimpleNamespace(type="private"), answer=AsyncMock())
+    callback = SimpleNamespace(from_user=SimpleNamespace(id=2, username="reader"), message=message, answer=AsyncMock())
+    asyncio.run(module.menu_callback(callback))
+    callback.answer.assert_awaited_once()
+    assert "Подписка активна" in message.answer.call_args.args[0]

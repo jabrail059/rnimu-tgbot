@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.config import Settings
 from app.database import Database
+from app.documents import DocumentStorage, InvalidPDF
 from app.media import InvalidImage, MediaStorage
 from app.security import telegram_user_id, yookassa_source_is_allowed, yoomoney_signature_is_valid
 from app.yookassa import YooKassaClient, YooKassaError
@@ -45,7 +46,10 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=web_directory), name="static")
     yookassa = YooKassaClient(settings)
     media = MediaStorage(settings.media_path)
+    documents = DocumentStorage(settings.media_path)
     image_workers = asyncio.Semaphore(2)
+    document_worker = asyncio.Semaphore(1)
+    document_uploads = asyncio.Semaphore(2)
     image_requests: OrderedDict[int, deque[float]] = OrderedDict()
 
     @app.middleware("http")
@@ -108,7 +112,7 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
         return {"is_active": subscription_end is not None, "subscription_end": subscription_end,
                 "is_admin": user_id in settings.admin_ids, "user_id": user_id,
                 "price": f"{settings.subscription_price:.2f}", "days": settings.subscription_days,
-                "max_image_bytes": settings.max_image_bytes}
+                "max_image_bytes": settings.max_image_bytes, "max_pdf_bytes": settings.max_pdf_bytes}
 
     @app.get("/api/categories", dependencies=[Depends(reader)])
     async def categories():
@@ -128,29 +132,50 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
             raise HTTPException(404, "Материал не найден.")
         return result
 
-    @app.get("/api/images/{image_id}")
-    async def material_image(image_id: int, user_id: int = Depends(reader)):
+    def limit_page_requests(user_id: int):
         now = time.monotonic()
         history = image_requests.setdefault(user_id, deque())
         image_requests.move_to_end(user_id)
         while history and history[0] <= now - 60:
             history.popleft()
         if len(history) >= 60:
-            raise HTTPException(429, "Слишком много запросов фото. Подождите минуту.", headers={"Retry-After": "60"})
+            raise HTTPException(429, "Слишком много запросов страниц. Подождите минуту.", headers={"Retry-After": "60"})
         history.append(now)
         if len(image_requests) > 10_000:
             image_requests.popitem(last=False)
+
+    @app.get("/api/images/{image_id}")
+    async def material_image(image_id: int, user_id: int = Depends(reader)):
+        limit_page_requests(user_id)
         record = await database.image(image_id)
         if record is None:
             raise HTTPException(404, "Фото не найдено.")
         try:
             async with image_workers:
-                photo = await run_in_threadpool(media.render, record["filename"], user_id)
+                photo = await run_in_threadpool(media.render, record["filename"])
         except FileNotFoundError:
             raise HTTPException(404, "Фото не найдено.")
         except InvalidImage as exc:
             raise HTTPException(422, str(exc)) from exc
         return Response(photo, media_type="image/jpeg")
+
+    @app.get("/api/documents/{document_id}/pages/{page_number}")
+    async def document_page(document_id: int, page_number: int, user_id: int = Depends(reader)):
+        limit_page_requests(user_id)
+        record = await database.document(document_id)
+        if record is None or not 1 <= page_number <= len(record["page_sizes"]):
+            raise HTTPException(404, "Страница PDF не найдена.")
+        try:
+            async with document_worker:
+                # Access may expire while waiting for another page to render.
+                await reader(user_id)
+                page = await run_in_threadpool(documents.render, record["filename"], page_number - 1)
+        except (FileNotFoundError, IndexError):
+            raise HTTPException(404, "Страница PDF не найдена.")
+        except InvalidPDF as exc:
+            raise HTTPException(422, str(exc)) from exc
+        await reader(user_id)
+        return Response(page, media_type="image/jpeg")
 
     @app.post("/api/admin/categories", status_code=201, dependencies=[Depends(admin)])
     async def create_category(data: CategoryInput):
@@ -204,16 +229,54 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
             raise
         return {"id": image_id}
 
+    @app.post("/api/admin/materials/{material_id}/documents", status_code=201, dependencies=[Depends(admin)])
+    async def upload_document(material_id: int, request: Request, title: str = "Документ.pdf"):
+        title = title.strip()
+        if not title or len(title) > 300:
+            raise HTTPException(422, "Название PDF должно содержать от 1 до 300 символов.")
+        if await database.material(material_id) is None:
+            raise HTTPException(404, "Материал не найден.")
+        size_header = request.headers.get("content-length")
+        if size_header and size_header.isdigit() and int(size_header) > settings.max_pdf_bytes:
+            raise HTTPException(413, f"Размер PDF не должен превышать {settings.max_pdf_bytes // (1024 * 1024)} МБ.")
+        # The body is written incrementally, including chunked requests. A large
+        # PDF never becomes a full in-memory request buffer.
+        async with document_uploads:
+            filename, target = await run_in_threadpool(documents.create_upload)
+            stored = False
+            try:
+                size = 0
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > settings.max_pdf_bytes:
+                        raise HTTPException(413, f"Размер PDF не должен превышать {settings.max_pdf_bytes // (1024 * 1024)} МБ.")
+                    await run_in_threadpool(target.write, chunk)
+                await run_in_threadpool(target.close)
+                async with document_worker:
+                    page_sizes = await run_in_threadpool(documents.inspect, filename)
+                document_id = await database.add_document(material_id, filename, title, size, page_sizes)
+                stored = True
+                return {"id": document_id, "page_count": len(page_sizes)}
+            except InvalidPDF as exc:
+                raise HTTPException(422, str(exc)) from exc
+            except aiosqlite.IntegrityError as exc:
+                raise HTTPException(404, "Материал был удалён.") from exc
+            finally:
+                await run_in_threadpool(target.close)
+                if not stored:
+                    await run_in_threadpool(documents.delete, filename)
+
     async def remove_content(kind: str, content_id: int):
         filenames = await database.delete_content(kind, content_id)
         if filenames is None:
             raise HTTPException(404, "Запись не найдена.")
         for filename in filenames:
             try:
-                await run_in_threadpool(media.delete, filename)
+                storage = documents if filename.endswith(".pdf") else media
+                await run_in_threadpool(storage.delete, filename)
             except OSError:
                 # DB deletion immediately revokes access even if disk cleanup fails.
-                logger.exception("Could not remove private image %s", filename)
+                logger.exception("Could not remove private attachment %s", filename)
         return {"ok": True}
 
     @app.delete("/api/admin/categories/{category_id}", dependencies=[Depends(admin)])
@@ -227,6 +290,10 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
     @app.delete("/api/admin/images/{image_id}", dependencies=[Depends(admin)])
     async def delete_image(image_id: int):
         return await remove_content("image", image_id)
+
+    @app.delete("/api/admin/documents/{document_id}", dependencies=[Depends(admin)])
+    async def delete_document(document_id: int):
+        return await remove_content("document", document_id)
 
     @app.post("/api/payment/webhook", status_code=200)
     async def payment_webhook(request: Request):

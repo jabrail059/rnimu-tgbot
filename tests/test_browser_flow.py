@@ -19,6 +19,7 @@ import uvicorn
 from fastapi import Response
 
 from test_library_api import project, signed_data, photo_bytes
+from test_documents import pdf_bytes
 from app.web import create_app
 
 
@@ -54,9 +55,11 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
     def sdk(uid: int = 1):
         import json
         return Response("window.Telegram = {WebApp: {initData: " + json.dumps(signed_data(uid)) + """,
-          ready() {}, expand() {}, close() {}, isActive: true,
+          ready() {}, expand() {}, close() {}, isActive: true, isFullscreen: false, events: {},
+          requestFullscreen() {this.isFullscreen=true; this.events.fullscreenChanged?.()},
+          exitFullscreen() {this.isFullscreen=false; this.events.fullscreenChanged?.()},
           isVersionAtLeast() {return true}, enableClosingConfirmation() {}, disableClosingConfirmation() {},
-          BackButton: {show() {}, hide() {}, onClick() {}}, onEvent() {}
+          BackButton: {show() {}, hide() {}, onClick() {}}, onEvent(name, callback) {this.events[name]=callback}
         }}; window.testErrors = []; window.addEventListener('error', e => window.testErrors.push(e.message));
         """, media_type="application/javascript")
 
@@ -125,6 +128,11 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         element_id = next(iter(element.values()))
         command("POST", f"/element/{element_id}/value", {"text": str(photo_path) + "\n" + str(photo_path)})
         wait_for("document.querySelectorAll('.image-row').length === 2"); idle()
+        pdf_path = tmp_path / "Лекция.pdf"; pdf_path.write_bytes(pdf_bytes(page_count=8))
+        element = command("POST", "/element", {"using": "css selector", "value": "#pdf-files"})
+        element_id = next(iter(element.values()))
+        command("POST", f"/element/{element_id}/value", {"text": str(pdf_path)})
+        wait_for("document.querySelectorAll('.document-row').length === 1"); idle()
         fill("material-category", str(destination_id))
         js("document.getElementById('material-form').requestSubmit()")
         idle()
@@ -133,7 +141,9 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         wait_for("!document.getElementById('photo').hidden"); idle()
         assert js("return document.getElementById('photo').width") == 800
         assert not js("return Boolean(window.stolen)")
-        click("next-photo"); wait_for("document.getElementById('photo-counter').textContent === '2 / 2'")
+        assert js("return document.getElementById('next-photo') === null && document.getElementById('prev-photo') === null")
+        js("const stage=document.getElementById('photo-stage'); stage.dispatchEvent(new PointerEvent('pointerdown',{clientX:180,clientY:100,isPrimary:true})); stage.dispatchEvent(new PointerEvent('pointerup',{clientX:50,clientY:100,isPrimary:true}))")
+        wait_for("document.getElementById('photo-counter').textContent === '2 / 2'")
         wait_for("!document.getElementById('photo').hidden")
         js("const stage=document.getElementById('photo-stage'); stage.dispatchEvent(new PointerEvent('pointerdown',{clientX:50,clientY:100,isPrimary:true})); stage.dispatchEvent(new PointerEvent('pointerup',{clientX:180,clientY:100,isPrimary:true}))")
         wait_for("document.getElementById('photo-counter').textContent === '1 / 2'")
@@ -146,6 +156,30 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         wait_for("!document.getElementById('photo').hidden")
         assert js("return document.documentElement.scrollWidth <= window.innerWidth")
         Path("/tmp/rnimu-miniapp-reader.png").write_bytes(base64.b64decode(command("GET", "/screenshot")))
+        click("fullscreen")
+        assert js("return window.Telegram.WebApp.isFullscreen && document.getElementById('fullscreen').textContent === 'Свернуть экран'")
+        click("fullscreen")
+        assert not js("return window.Telegram.WebApp.isFullscreen")
+        js("document.querySelectorAll('.pdf-page')[0].scrollIntoView()")
+        wait_for("document.querySelectorAll('.pdf-page canvas')[0].width > 1")
+        assert js("return document.querySelectorAll('.pdf-page').length") == 8
+        assert js("return document.querySelectorAll('#documents iframe, #documents embed, #documents a').length") == 0
+        js("document.querySelectorAll('.pdf-page')[7].scrollIntoView()")
+        wait_for("document.querySelectorAll('.pdf-page canvas')[7].width > 1")
+        wait_for("document.querySelectorAll('.pdf-page canvas')[0].width === 1")
+        scroll_before = js("return window.scrollY")
+        js("window.dispatchEvent(new Event('blur'))")
+        assert js("return document.querySelectorAll('#documents canvas').length") == 0
+        click("resume"); wait_for("document.getElementById('privacy-shield').hidden")
+        wait_for("document.querySelectorAll('.pdf-page canvas')[7].width > 1")
+        assert abs(js("return window.scrollY") - scroll_before) < 3
+        assert js("return document.documentElement.scrollWidth <= window.innerWidth")
+        Path("/tmp/rnimu-miniapp-pdf-mobile.png").write_bytes(base64.b64decode(command("GET", "/screenshot")))
+        command("POST", "/window/rect", {"width": 1440, "height": 1000})
+        js("document.querySelectorAll('.pdf-page')[0].scrollIntoView()")
+        wait_for("document.querySelectorAll('.pdf-page canvas')[0].width > 1")
+        assert js("return document.getElementById('article').getBoundingClientRect().width") > 1200
+        Path("/tmp/rnimu-miniapp-pdf-desktop.png").write_bytes(base64.b64decode(command("GET", "/screenshot")))
         assert js("return window.testErrors") == []
 
         # Subscriber has reader access, with no management controls.
@@ -162,6 +196,7 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         wait_for("!document.getElementById('paywall').hidden && document.getElementById('privacy-shield').hidden")
         assert js("return document.getElementById('article-content').textContent") == ""
         assert js("return document.getElementById('photo').width") == 1
+        assert js("return document.querySelectorAll('#documents canvas').length") == 0
         # A non-subscriber gets no library entries.
         command("POST", "/url", {"url": f"http://127.0.0.1:{app_port}/test-shell?uid=3"})
         wait_for("!document.getElementById('paywall').hidden")

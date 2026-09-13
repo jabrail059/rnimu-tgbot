@@ -6,7 +6,7 @@ import uuid
 import warnings
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 
 class InvalidImage(ValueError):
@@ -71,24 +71,10 @@ class MediaStorage:
             raise
         return filename
 
-    def render(self, filename: str, user_id: int) -> bytes:
-        # Watermark is baked into the response, so removing a Canvas/DOM overlay
-        # cannot recover a clean subscriber image.
-        photo = self._decode(self._path(filename)).convert("RGBA")
-        overlay = Image.new("RGBA", photo.size)
-        draw = ImageDraw.Draw(overlay)
-        font_size = max(10, min(42, photo.width // 32))
-        font = ImageFont.load_default(size=font_size)
-        label = f"@eucliris / ID {user_id}"
-        text_width = draw.textbbox((0, 0), label, font=font)[2]
-        step_x = max(text_width + font_size * 3, photo.width // 2)
-        step_y = max(font_size * 7, photo.height // 4)
-        for row, y in enumerate(range(font_size, photo.height, step_y)):
-            for x in range(font_size - (step_x // 3 if row % 2 else 0), photo.width, step_x):
-                draw.text((x, y), label, font=font, fill=(255, 255, 255, 75),
-                          stroke_width=1, stroke_fill=(0, 0, 0, 55))
+    def render(self, filename: str) -> bytes:
+        photo = self._decode(self._path(filename))
         result = io.BytesIO()
-        Image.alpha_composite(photo, overlay).convert("RGB").save(result, format="JPEG", quality=92)
+        photo.save(result, format="JPEG", quality=92)
         return result.getvalue()
 
     def delete(self, filename: str) -> None:

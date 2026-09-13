@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -82,6 +84,22 @@ class Database:
               CREATE INDEX IF NOT EXISTS idx_images_material ON material_images(material_id, position, id);
             """)
             await db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, ?)", (datetime.now(UTC).isoformat(),))
+            await db.executescript("""
+              CREATE TABLE IF NOT EXISTS material_documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+                filename TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL, page_sizes TEXT NOT NULL
+              );
+              CREATE INDEX IF NOT EXISTS idx_documents_material ON material_documents(material_id, id);
+              CREATE TABLE IF NOT EXISTS subscription_reminders (
+                user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                reminder_date TEXT NOT NULL, subscription_end TEXT NOT NULL,
+                token TEXT NOT NULL, claimed_at TEXT NOT NULL, sent_at TEXT,
+                PRIMARY KEY (user_id, reminder_date)
+              );
+            """)
+            await db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, ?)", (datetime.now(UTC).isoformat(),))
             await db.commit()
 
     async def categories(self) -> list[dict]:
@@ -113,7 +131,8 @@ class Database:
     async def materials(self, category_id: int) -> list[dict]:
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
-            rows = await (await db.execute("""SELECT m.id, m.title, COUNT(i.id) AS image_count
+            rows = await (await db.execute("""SELECT m.id, m.title, COUNT(i.id) AS image_count,
+                (SELECT COUNT(*) FROM material_documents d WHERE d.material_id=m.id) AS document_count
                 FROM materials m LEFT JOIN material_images i ON i.material_id=m.id
                 WHERE m.category_id=? GROUP BY m.id ORDER BY m.id""", (category_id,))).fetchall()
             return [dict(row) for row in rows]
@@ -125,7 +144,9 @@ class Database:
             if not row:
                 return None
             images = await (await db.execute("SELECT id, position FROM material_images WHERE material_id=? ORDER BY position, id", (material_id,))).fetchall()
-            return {**dict(row), "images": [dict(image) for image in images]}
+            documents = await (await db.execute("SELECT id, title, size_bytes, page_sizes FROM material_documents WHERE material_id=? ORDER BY id", (material_id,))).fetchall()
+            return {**dict(row), "images": [dict(image) for image in images],
+                    "documents": [{**dict(document), "page_sizes": json.loads(document["page_sizes"])} for document in documents]}
 
     async def save_material(self, category_id: int, title: str, text: str, material_id: int | None = None) -> int | None:
         async with self._connect() as db:
@@ -153,17 +174,34 @@ class Database:
             row = await (await db.execute("SELECT * FROM material_images WHERE id=?", (image_id,))).fetchone()
             return dict(row) if row else None
 
+    async def add_document(self, material_id: int, filename: str, title: str, size_bytes: int, page_sizes: list) -> int:
+        async with self._connect() as db:
+            cursor = await db.execute("""INSERT INTO material_documents(material_id, filename, title, size_bytes, page_sizes)
+                VALUES (?, ?, ?, ?, ?)""", (material_id, filename, title, size_bytes, json.dumps(page_sizes)))
+            await db.commit()
+            return cursor.lastrowid
+
+    async def document(self, document_id: int) -> dict | None:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute("SELECT * FROM material_documents WHERE id=?", (document_id,))).fetchone()
+            return {**dict(row), "page_sizes": json.loads(row["page_sizes"])} if row else None
+
     async def delete_content(self, kind: str, content_id: int) -> list[str] | None:
         # Fixed table/column allowlist; no caller-controlled SQL identifiers.
         queries = {
             "category": ("categories", "SELECT filename FROM material_images WHERE material_id IN (SELECT id FROM materials WHERE category_id=?)"),
             "material": ("materials", "SELECT filename FROM material_images WHERE material_id=?"),
             "image": ("material_images", "SELECT filename FROM material_images WHERE id=?"),
+            "document": ("material_documents", "SELECT filename FROM material_documents WHERE id=?"),
         }
         table, images_query = queries[kind]
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             images = await (await db.execute(images_query, (content_id,))).fetchall()
+            if kind in {"category", "material"}:
+                documents_query = images_query.replace("material_images", "material_documents")
+                images += await (await db.execute(documents_query, (content_id,))).fetchall()
             cursor = await db.execute(f"DELETE FROM {table} WHERE id=?", (content_id,))
             await db.commit()
             return [row[0] for row in images] if cursor.rowcount else None
@@ -245,6 +283,43 @@ class Database:
             await db.execute("UPDATE payments SET status='succeeded', operation_id=?, paid_at=? WHERE id=?", (operation_id, now.isoformat(), payment_id))
             await db.execute("UPDATE users SET subscription_start=COALESCE(subscription_start, ?), subscription_end=? WHERE user_id=?", (now.isoformat(), subscription_end, user_id))
             await db.commit(); return PaymentActivation(user_id, True, subscription_end)
+
+    async def reminder_candidates(self, now: datetime) -> list[tuple[int, str]]:
+        async with self._connect() as db:
+            return await (await db.execute("""SELECT user_id, subscription_end FROM users
+                WHERE julianday(subscription_end) > julianday(?) AND julianday(subscription_end) <= julianday(?)""",
+                (now.isoformat(), (now + timedelta(days=3)).isoformat()))).fetchall()
+
+    async def claim_reminder(self, user_id: int, end: str, date: str, now: datetime) -> str | None:
+        """A dated, renewable lease prevents duplicate workers/restarts from sending twice."""
+        token = uuid.uuid4().hex
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            current = await (await db.execute("SELECT subscription_end FROM users WHERE user_id=?", (user_id,))).fetchone()
+            parsed_end = self._parse_datetime(end)
+            if not current or current[0] != end or not parsed_end or not now < parsed_end <= now + timedelta(days=3):
+                return None
+            cursor = await db.execute("""INSERT INTO subscription_reminders
+                (user_id, reminder_date, subscription_end, token, claimed_at) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, reminder_date) DO UPDATE SET
+                  subscription_end=excluded.subscription_end, token=excluded.token, claimed_at=excluded.claimed_at
+                WHERE subscription_reminders.sent_at IS NULL AND subscription_reminders.claimed_at < ?""",
+                (user_id, date, end, token, now.isoformat(), (now - timedelta(minutes=10)).isoformat()))
+            await db.commit()
+            return token if cursor.rowcount else None
+
+    async def reminder_is_current(self, user_id: int, end: str, now: datetime) -> bool:
+        async with self._connect() as db:
+            row = await (await db.execute("SELECT subscription_end FROM users WHERE user_id=?", (user_id,))).fetchone()
+        parsed_end = self._parse_datetime(end)
+        return bool(row and row[0] == end and parsed_end and parsed_end > now)
+
+    async def finish_reminder(self, token: str, now: datetime) -> None:
+        async with self._connect() as db:
+            await db.execute("UPDATE subscription_reminders SET sent_at=? WHERE token=?", (now.isoformat(), token))
+            # Keep recent history only; today's deduplication and leases are retained.
+            await db.execute("DELETE FROM subscription_reminders WHERE reminder_date < ?", ((now - timedelta(days=90)).date().isoformat(),))
+            await db.commit()
 
     async def subscription_end(self, user_id: int) -> str | None:
         async with self._connect() as db:

@@ -16,6 +16,7 @@ from yoomoney import Quickpay
 
 from app.config import get_settings
 from app.database import Database
+from app.reminders import run_reminders
 from app.web import create_app
 from app.yookassa import YooKassaClient, YooKassaError
 
@@ -37,7 +38,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
     if settings.enable_legacy_yoomoney:
         rows.append([InlineKeyboardButton(text="Оплатить через старый YooMoney (временно)", callback_data="buy_legacy")])
     rows.append([InlineKeyboardButton(text="Открыть приложение", web_app=WebAppInfo(url=settings.public_base_url))])
-    rows.append([InlineKeyboardButton(text="О курсе", callback_data="course_info")])
+    rows.append([InlineKeyboardButton(text="Главное меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -46,18 +47,22 @@ def main_keyboard() -> InlineKeyboardMarkup:
 async def start(message: Message) -> None:
     if not message.from_user:
         return
+    await send_menu(message, message.from_user)
+
+
+async def send_menu(message: Message, user) -> None:
     if message.chat.type != "private":
         await message.answer("Откройте личный чат с ботом и отправьте /menu.")
         return
-    await database.upsert_user(message.from_user.id, message.from_user.username)
-    subscription_end = await database.subscription_end(message.from_user.id)
+    await database.upsert_user(user.id, user.username)
+    subscription_end = await database.subscription_end(user.id)
     status = "Подписка неактивна"
     if subscription_end:
         end = datetime.fromisoformat(subscription_end).astimezone(ZoneInfo("Europe/Moscow"))
         status = f"Подписка активна\nДействует до: {end:%d.%m.%Y %H:%M} (МСК)"
     await message.answer(
         "Патанатомия с @eucliris\n\n"
-        "Учебные материалы по разделам: тексты и фотографии препаратов. "
+        "Учебные материалы по разделам: тексты, фотографии препаратов и PDF. "
         "Новые материалы постепенно появляются в приложении.\n\n"
         f"{status}\n\n"
         f"Доступ ко всем материалам — {settings.subscription_price:.2f} ₽ на {settings.subscription_days} дней.",
@@ -71,17 +76,11 @@ async def show_user_id(message: Message) -> None:
         await message.answer(f"Ваш Telegram ID: {message.from_user.id}")
 
 
-@dp.callback_query(F.data == "course_info")
-async def course_info(callback: CallbackQuery) -> None:
+@dp.callback_query(F.data.in_({"menu", "course_info"}))
+async def menu_callback(callback: CallbackQuery) -> None:
     await callback.answer()
     if callback.message:
-        await callback.message.answer(
-            "Курс по патологической анатомии для студентов.\n\n"
-            "В приложении — разделы, учебные тексты и галереи фотографий препаратов. "
-            "Материалы добавляются постепенно и доступны по подписке.\n\n"
-            f"Стоимость — {settings.subscription_price:.2f} ₽ на {settings.subscription_days} дней.\n"
-            "Автор курса: @eucliris", reply_markup=main_keyboard(),
-        )
+        await send_menu(callback.message, callback.from_user)
 
 
 @dp.callback_query(F.data == "buy")
@@ -134,6 +133,7 @@ async def run() -> None:
     server: uvicorn.Server | None = None
     server_task: asyncio.Task[None] | None = None
     polling_task: asyncio.Task[None] | None = None
+    reminder_task: asyncio.Task[None] | None = None
     try:
         await database.initialize()
         await bot.set_my_commands([
@@ -146,16 +146,18 @@ async def run() -> None:
         server = uvicorn.Server(uvicorn.Config(web_app, host="127.0.0.1", port=8000, log_level=os.getenv("LOG_LEVEL", "info").lower(), proxy_headers=True, forwarded_allow_ips="127.0.0.1"))
         server_task = asyncio.create_task(server.serve(), name="uvicorn")
         polling_task = asyncio.create_task(dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types()), name="polling")
-        done, _ = await asyncio.wait({server_task, polling_task}, return_when=asyncio.FIRST_COMPLETED)
+        reminder_task = asyncio.create_task(run_reminders(database, bot, settings), name="subscription-reminders")
+        done, _ = await asyncio.wait({server_task, polling_task, reminder_task}, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             task.result()
         raise RuntimeError("Bot or API server stopped unexpectedly")
     finally:
         if server:
             server.should_exit = True
-        if polling_task and not polling_task.done():
-            polling_task.cancel()
-        await asyncio.gather(*(task for task in (server_task, polling_task) if task), return_exceptions=True)
+        for task in (polling_task, reminder_task):
+            if task and not task.done():
+                task.cancel()
+        await asyncio.gather(*(task for task in (server_task, polling_task, reminder_task) if task), return_exceptions=True)
         await bot.session.close()
 
 

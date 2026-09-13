@@ -89,6 +89,7 @@ def test_session_and_read_access(project):
     ("delete", "/api/admin/categories/1", None), ("post", "/api/admin/materials", {"category_id": 1, "title": "X"}),
     ("patch", "/api/admin/materials/1", {"category_id": 1, "title": "X"}), ("delete", "/api/admin/materials/1", None),
     ("post", "/api/admin/materials/1/images", None), ("delete", "/api/admin/images/1", None),
+    ("post", "/api/admin/materials/1/documents", None), ("delete", "/api/admin/documents/1", None),
 ])
 def test_all_mutations_require_admin(project, method, path, body):
     client, _, _ = project
@@ -118,7 +119,7 @@ def test_crud_and_cascading_file_deletion(project):
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
-def test_images_private_personalized_and_not_cached(project):
+def test_images_private_without_watermarks_and_not_cached(project):
     client, db, settings = project
     _, material_id = create_material(client)
     upload = client.post(f"/api/admin/materials/{material_id}/images", headers=auth(1), content=photo_bytes())
@@ -127,11 +128,12 @@ def test_images_private_personalized_and_not_cached(project):
     assert client.get(path).status_code == 401
     assert client.get(path, headers=auth(3)).status_code == 403
     first = client.get(path, headers=auth(1)); second = client.get(path, headers=auth(2))
-    assert first.status_code == second.status_code == 200 and first.content != second.content
+    assert first.status_code == second.status_code == 200 and first.content == second.content
     assert "no-store" in second.headers["cache-control"] and second.headers["content-type"] == "image/jpeg"
     assert second.headers["vary"] == "Authorization" and "etag" not in second.headers
     normalized = Image.open(io.BytesIO(second.content))
     assert normalized.size == (800, 600) and not normalized.getexif()
+    assert all(low == high for low, high in normalized.getextrema())
     record = asyncio.run(db.image(image_id))
     assert client.get(f"/static/{record['filename']}").status_code == 404
     assert client.get(f"/data/material_images/{record['filename']}").status_code == 404
@@ -199,7 +201,7 @@ def test_migration_preserves_existing_users_and_payments(tmp_path):
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT username, subscription_end FROM users").fetchone() == ("existing", end)
         assert connection.execute("SELECT id, amount, status, operation_id FROM payments").fetchone() == ("old", "120.00", "succeeded", "operation")
-        assert connection.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall() == [(1,), (2,)]
+        assert connection.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall() == [(1,), (2,), (3,)]
         assert connection.execute("SELECT COUNT(*) FROM categories").fetchone()[0] == 0
 
 
@@ -238,7 +240,7 @@ def test_storage_rejects_public_path_and_traversal(tmp_path):
         MediaStorage(str(Path(__file__).resolve().parents[1] / "web" / "uploads"))
     storage = MediaStorage(str(tmp_path / "media"))
     with pytest.raises(ValueError):
-        storage.render("../secret.jpg", 1)
+        storage.render("../secret.jpg")
 
 
 @pytest.mark.parametrize("extension,format_name", [("png", "PNG"), ("webp", "WEBP"), ("jpg", "JPEG")])
@@ -254,7 +256,7 @@ def test_earlier_release_images_remain_readable_and_protected(project, extension
     assert response.status_code == 200 and response.headers["content-type"] == "image/jpeg"
     decoded = Image.open(io.BytesIO(response.content))
     assert decoded.size == (800, 600)
-    assert decoded.convert("RGB").getextrema()[0][0] != decoded.convert("RGB").getextrema()[0][1]
+    assert all(high - low <= 2 for low, high in decoded.convert("RGB").getextrema())
     assert client.get(f"/api/images/{image_id}", headers=auth(3)).status_code == 403
     assert client.delete(f"/api/admin/images/{image_id}", headers=auth(1)).status_code == 200
     assert not (Path(settings.media_path) / filename).exists()

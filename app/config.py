@@ -28,6 +28,8 @@ class Settings:
     admin_ids: frozenset[int] = frozenset()
     media_path: str = "data/material_images"
     max_image_bytes: int = 10 * 1024 * 1024
+    max_pdf_bytes: int = 512 * 1024 * 1024
+    subscription_reminder_hour: int = 10
 
     @property
     def payment_return_url(self) -> str:
@@ -53,6 +55,18 @@ def get_settings() -> Settings:
         raise RuntimeError("SUBSCRIPTION_PRICE or SUBSCRIPTION_DAYS is invalid") from exc
     if price <= 0 or days <= 0:
         raise RuntimeError("SUBSCRIPTION_PRICE and SUBSCRIPTION_DAYS must be positive")
+    try:
+        pdf_size_mb = int(os.getenv("PDF_MAX_SIZE_MB", "512"))
+        if pdf_size_mb <= 0:
+            raise ValueError
+    except ValueError as exc:
+        raise RuntimeError("PDF_MAX_SIZE_MB must be a positive integer") from exc
+    try:
+        reminder_hour = int(os.getenv("SUBSCRIPTION_REMINDER_HOUR", "10"))
+        if not 0 <= reminder_hour <= 23:
+            raise ValueError
+    except ValueError as exc:
+        raise RuntimeError("SUBSCRIPTION_REMINDER_HOUR must be an hour from 0 to 23 (Moscow time)") from exc
     legacy_enabled = os.getenv("ENABLE_LEGACY_YOOMONEY", "false").lower() == "true"
     legacy_wallet = os.getenv("YOOMONEY_WALLET", "").strip() or None
     legacy_secret = os.getenv("YOOMONEY_NOTIFICATION_SECRET", "").strip() or None
@@ -83,5 +97,6 @@ def get_settings() -> Settings:
         trust_proxy_headers=os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true",
         enable_legacy_yoomoney=legacy_enabled, yoomoney_wallet=legacy_wallet,
         yoomoney_notification_secret=legacy_secret,
-        admin_ids=admin_ids, media_path=media_path,
+        admin_ids=admin_ids, media_path=media_path, max_pdf_bytes=pdf_size_mb * 1024 * 1024,
+        subscription_reminder_hour=reminder_hour,
     )

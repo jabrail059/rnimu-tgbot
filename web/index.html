@@ -14,6 +14,7 @@
       <button id="back" class="secondary icon" hidden aria-label="Назад">←</button>
       <div><p class="eyebrow">КУРС · @eucliris</p><h1>Патанатомия</h1></div>
       <button id="admin-toggle" class="secondary" hidden>Управление</button>
+      <button id="fullscreen" class="secondary" hidden>На весь экран</button>
     </header>
     <p id="subscription" class="status" hidden></p>
     <p id="loading" role="status">Проверяем доступ…</p>
@@ -21,7 +22,7 @@
     <p id="notice" class="status" role="status" hidden></p>
     <section id="paywall" class="panel" hidden>
       <p class="eyebrow">ДОСТУП К КУРСУ</p><h2>Учитесь в своём темпе</h2>
-      <p>Тексты и фотографии препаратов, собранные по разделам. Новые материалы появляются постепенно.</p>
+      <p>Тексты, фотографии препаратов и PDF, собранные по разделам. Новые материалы появляются постепенно.</p>
       <p id="price"></p><button id="open-bot">Вернуться в бот для оплаты</button>
       <button id="refresh-session" class="secondary">Я оплатил — проверить доступ</button>
     </section>
@@ -41,7 +42,7 @@
     </section>
     <article id="article" class="protected" hidden>
       <p class="eyebrow">УЧЕБНЫЙ МАТЕРИАЛ</p><h2 id="article-title"></h2>
-      <p id="reader-mark" class="muted"></p><div id="article-content"></div>
+      <div id="article-content"></div>
       <section id="gallery" aria-label="Фотографии материала" hidden>
         <h3>Фотографии</h3>
         <div id="photo-stage" tabindex="0" role="group" aria-label="Галерея. Листайте свайпом или стрелками.">
@@ -49,12 +50,11 @@
           <p id="photo-loading" role="status" hidden>Загружаем фото…</p>
         </div>
         <div class="gallery-controls">
-          <button id="prev-photo" class="secondary icon" aria-label="Предыдущее фото">←</button>
           <span id="photo-counter" aria-live="polite"></span>
-          <button id="next-photo" class="secondary icon" aria-label="Следующее фото">→</button>
         </div>
-        <p class="muted gallery-hint">Листайте фотографии свайпом или стрелками</p>
+        <p class="muted gallery-hint">Листайте фотографии свайпом · На клавиатуре: ← →</p>
       </section>
+      <section id="documents" aria-label="PDF материала" hidden></section>
     </article>
     <section id="category-editor" class="panel" hidden>
       <h2 id="category-editor-title">Новый раздел</h2>
@@ -76,9 +76,14 @@
         <p class="muted">JPEG, PNG или WebP, до 10 МБ и 20 мегапикселей. Фото появятся в галерее в порядке загрузки.</p>
         <label for="image-files">Добавить фотографии</label><input id="image-files" type="file" accept="image/jpeg,image/png,image/webp" multiple>
         <p id="upload-status" role="status" hidden></p><div id="editor-image-list" class="card-list"></div>
+        <h3>PDF-документы</h3>
+        <p id="pdf-limit" class="muted"></p>
+        <label for="pdf-files">Добавить PDF</label><input id="pdf-files" type="file" accept="application/pdf,.pdf" multiple>
+        <p id="pdf-upload-status" role="status" hidden></p><progress id="pdf-upload-progress" max="100" value="0" hidden aria-label="Загрузка PDF"></progress>
+        <div id="editor-document-list" class="card-list"></div>
         <div class="actions"><button id="preview-material" class="secondary">Посмотреть материал</button><button id="delete-material" class="danger">Удалить материал</button></div>
       </section>
-      <p id="save-first" class="muted">Сначала сохраните материал, затем добавьте фотографии.</p>
+      <p id="save-first" class="muted">Сначала сохраните материал, затем добавьте фотографии или PDF.</p>
     </section>
     <footer>Автор курса <a href="https://t.me/eucliris" target="_blank" rel="noopener noreferrer">@eucliris</a></footer>
   </main>

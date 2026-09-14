@@ -148,6 +148,11 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         wait_for("(document.querySelector('.photo-page canvas')?.width || 0) > 1"); idle()
         assert js("return document.querySelector('.photo-page canvas').width") == 800
         assert js("return document.querySelectorAll('.photo-page').length") == 2
+        assert js("return document.querySelectorAll('[data-photo-scale]').length") == 3
+        js("document.querySelector('[data-photo-scale=\"1.65\"]').click()")
+        assert js("return document.getElementById('photo-pages').dataset.scale") == "1.65"
+        assert js("return document.querySelector('[data-photo-scale=\"1.65\"]').getAttribute('aria-pressed')") == "true"
+        js("document.querySelector('[data-photo-scale=\"1\"]').click()")
         assert not js("return Boolean(window.stolen)")
         assert js("return document.getElementById('photo-stage') === null")
         js("window.dispatchEvent(new Event('blur'))")

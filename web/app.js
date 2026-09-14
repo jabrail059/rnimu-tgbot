@@ -11,6 +11,7 @@ let photoObserver = null;
 let photoPages = [];
 let photoActive = 0;
 let photoCacheBytes = 0;
+let photoScale = 1;
 const PHOTO_CACHE_LIMIT = 64 * 1024 * 1024;
 let expirationTimer = null;
 let privacyVersion = 0;
@@ -55,6 +56,7 @@ function clearPhotos() {
     page.canvas.width = 1; page.canvas.height = 1;
   }
   photoPages = []; photoCacheBytes = 0;
+  byId("gallery").querySelectorAll(".photo-controls").forEach(control => control.remove());
   byId("photo-pages").replaceChildren(); visible("gallery", false);
 }
 
@@ -241,11 +243,30 @@ function cachePhoto(page, blob) {
   }
 }
 
+function setPhotoScale(scale) {
+  photoScale = scale;
+  byId("photo-pages").dataset.scale = String(scale);
+  byId("gallery").querySelectorAll("[data-photo-scale]").forEach(button => {
+    button.setAttribute("aria-pressed", String(Number(button.dataset.photoScale) === scale));
+  });
+}
+
 function renderPhotos(photos) {
   clearPhotos();
   if (!photos.length || state.locked) return;
-  visible("gallery");
+  const gallery = byId("gallery"); visible("gallery");
   const container = byId("photo-pages");
+  container.dataset.scale = String(photoScale);
+  const controls = document.createElement("div"); controls.className = "photo-controls";
+  const label = document.createElement("span"); label.textContent = "Размер фото";
+  controls.append(label);
+  for (const [scale, title] of [[1, "Маленький"], [1.3, "Средний"], [1.65, "Большой"]]) {
+    const button = document.createElement("button"); button.type = "button";
+    button.className = "secondary photo-scale"; button.textContent = title;
+    button.dataset.photoScale = String(scale); button.setAttribute("aria-pressed", String(scale === photoScale));
+    button.onclick = () => setPhotoScale(scale); controls.append(button);
+  }
+  gallery.insertBefore(controls, container);
   photoObserver = new IntersectionObserver(entries => {
     for (const entry of entries) {
       const page = entry.target.photoPage;

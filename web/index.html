@@ -57,14 +57,8 @@
       <div id="article-content"></div>
       <section id="gallery" aria-label="Фотографии материала" hidden>
         <h3>Фотографии</h3>
-        <div id="photo-stage" tabindex="0" role="group" aria-label="Галерея. Листайте свайпом или стрелками.">
-          <canvas id="photo" role="img" aria-label="Фото препарата"></canvas>
-          <p id="photo-loading" role="status" hidden>Загружаем фото…</p>
-        </div>
-        <div class="gallery-controls">
-          <span id="photo-counter" aria-live="polite"></span>
-        </div>
-        <p class="muted gallery-hint">Листайте фотографии свайпом · На клавиатуре: ← →</p>
+        <p class="muted">Листайте вниз — фотографии расположены подряд.</p>
+        <div id="photo-pages" class="photo-pages"></div>
       </section>
       <section id="documents" aria-label="PDF материала" hidden></section>
     </article>
@@ -85,7 +79,7 @@
       </form>
       <section id="editor-images" hidden>
         <h3>Фотографии</h3>
-        <p class="muted">JPEG, PNG или WebP, до 10 МБ и 20 мегапикселей. Фото появятся в галерее в порядке загрузки.</p>
+        <p id="image-limit" class="muted">JPEG, PNG или WebP, до 50 МБ и 50 мегапикселей. Фото появятся в порядке загрузки.</p>
         <label for="image-files">Добавить фотографии</label><input id="image-files" type="file" accept="image/jpeg,image/png,image/webp" multiple>
         <p id="upload-status" role="status" hidden></p><div id="editor-image-list" class="card-list"></div>
         <h3>PDF-документы</h3>

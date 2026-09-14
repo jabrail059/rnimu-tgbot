@@ -5,9 +5,13 @@ const byId = id => document.getElementById(id);
 const visible = (id, value = true) => { byId(id).hidden = !value; };
 const views = ["catalog", "materials", "article", "editor", "category-editor", "paywall"];
 const state = { session: null, managing: false, view: null, category: null, material: null,
-  categoryEditId: null, photoIndex: 0, busy: false, locked: false, dirty: false };
-let photoRequest = null;
+  categoryEditId: null, busy: false, locked: false, dirty: false };
 let photoVersion = 0;
+let photoObserver = null;
+let photoPages = [];
+let photoActive = 0;
+let photoCacheBytes = 0;
+const PHOTO_CACHE_LIMIT = 64 * 1024 * 1024;
 let expirationTimer = null;
 let privacyVersion = 0;
 let documentVersion = 0;
@@ -18,6 +22,8 @@ let pdfScale = 1;
 let readerScroll = 0;
 let heartbeatTimer = null;
 let pdfUploadRunning = false;
+let pdfCacheBytes = 0;
+const PDF_CACHE_LIMIT = 96 * 1024 * 1024;
 
 if (tg) { tg.ready(); tg.expand(); }
 
@@ -41,12 +47,15 @@ async function api(path, {method = "GET", data, file, signal, binary = false, ex
   return binary ? response.blob() : response.json();
 }
 
-function clearPhoto() {
+function clearPhotos() {
   photoVersion += 1;
-  photoRequest?.abort(); photoRequest = null;
-  const canvas = byId("photo");
-  canvas.width = 1; canvas.height = 1;
-  visible("photo", false); visible("photo-loading", false);
+  photoObserver?.disconnect(); photoObserver = null;
+  for (const page of photoPages) {
+    page.request?.abort();
+    page.canvas.width = 1; page.canvas.height = 1;
+  }
+  photoPages = []; photoCacheBytes = 0;
+  byId("photo-pages").replaceChildren(); visible("gallery", false);
 }
 
 function clearReader() {
@@ -56,7 +65,7 @@ function clearReader() {
     state.material.view_token = null;
     api("/api/reader/close", {method: "POST", data: {view}, keepalive: true}).catch(() => {});
   }
-  clearPhoto();
+  clearPhotos();
   clearDocuments();
   byId("article-title").textContent = "";
   byId("article-content").textContent = "";
@@ -141,6 +150,7 @@ function empty(list, message) {
 async function refreshAccess() {
   const session = window.courseAuth.hasSession() ? await api("/api/session") : await window.courseAuth.open(initData);
   state.session = session;
+  byId("image-limit").textContent = `JPEG, PNG или WebP, до ${Math.round(session.max_image_bytes / 1024 / 1024)} МБ и 50 мегапикселей. Фото появятся в порядке загрузки.`;
   byId("pdf-limit").textContent = `До ${Math.round(session.max_pdf_bytes / 1024 / 1024)} МБ на файл. Выберите PDF без пароля — страницы будут доступны для чтения с прокруткой.`;
   if (!session.is_admin) state.managing = false;
   visible("admin-toggle", session.is_admin);
@@ -192,41 +202,113 @@ async function loadMaterials(categoryId) {
   view("materials");
 }
 
-async function openArticle(id, photoIndex = 0) {
+async function openArticle(id) {
+  const knownPhotoSizes = new Map(
+    (state.material?.id === id ? state.material.images : [])
+      .filter(photo => photo.width && photo.height)
+      .map(photo => [photo.id, [photo.width, photo.height]])
+  );
   const data = await api(`/api/materials/${id}`);
+  data.images.forEach(photo => {
+    const size = knownPhotoSizes.get(photo.id);
+    if (size) [photo.width, photo.height] = size;
+  });
   clearReader();
   state.material = {id: data.id, images: data.images, documents: data.documents, view_token: data.view_token};
-  state.photoIndex = Math.max(0, Math.min(photoIndex, data.images.length - 1));
   view("article");
   if (state.locked) return;
   heartbeatTimer = setInterval(heartbeat, 20_000);
   byId("article-title").textContent = data.title;
   byId("article-content").textContent = data.text || "";
-  visible("gallery", data.images.length > 0);
+  renderPhotos(data.images);
   renderDocuments(data.documents);
-  if (data.images.length) await loadPhoto(state.photoIndex);
 }
 
-async function loadPhoto(index) {
-  const photos = state.material?.images || [];
-  if (index < 0 || index >= photos.length || state.locked) return;
-  clearPhoto(); state.photoIndex = index;
-  const version = photoVersion;
-  photoRequest = new AbortController();
-  byId("photo-counter").textContent = `${index + 1} / ${photos.length}`;
-  visible("photo-loading");
-  let url;
+function discardCachedPhoto(page) {
+  if (!page.blob) return;
+  photoCacheBytes = Math.max(0, photoCacheBytes - page.blob.size); page.blob = null;
+}
+
+function cachePhoto(page, blob) {
+  discardCachedPhoto(page);
+  page.blob = blob; page.lastUsed = performance.now(); photoCacheBytes += blob.size;
+  while (photoCacheBytes > PHOTO_CACHE_LIMIT) {
+    const oldest = photoPages
+      .filter(item => item !== page && item.blob && !item.nearby && !item.request)
+      .sort((left, right) => left.lastUsed - right.lastUsed)[0];
+    if (!oldest) break;
+    discardCachedPhoto(oldest);
+  }
+}
+
+function renderPhotos(photos) {
+  clearPhotos();
+  if (!photos.length || state.locked) return;
+  visible("gallery");
+  const container = byId("photo-pages");
+  photoObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      const page = entry.target.photoPage;
+      page.nearby = entry.isIntersecting;
+      if (!page.nearby) {
+        page.request?.abort(); page.loaded = false;
+        page.canvas.width = 1; page.canvas.height = 1; page.canvas.hidden = true;
+        page.placeholder.hidden = false;
+      }
+    }
+    pumpPhotos();
+  }, {rootMargin: "800px 0px"});
+  photos.forEach((photo, index) => {
+    const wrapper = document.createElement("div"); wrapper.className = "photo-page";
+    const label = document.createElement("p"); label.className = "photo-page-label";
+    label.textContent = `Фотография ${index + 1} из ${photos.length}`;
+    const sheet = document.createElement("div"); sheet.className = "photo-sheet";
+    if (photo.width && photo.height) sheet.style.aspectRatio = `${photo.width} / ${photo.height}`;
+    const canvas = document.createElement("canvas"); canvas.width = 1; canvas.height = 1; canvas.hidden = true;
+    canvas.setAttribute("role", "img"); canvas.setAttribute("aria-label", label.textContent);
+    const placeholder = document.createElement("div"); placeholder.className = "photo-placeholder";
+    const status = document.createElement("span"); status.textContent = "Загружаем фотографию…"; status.setAttribute("role", "status");
+    const retry = document.createElement("button"); retry.textContent = "Повторить"; retry.hidden = true;
+    const page = {imageId: photo.id, photo, canvas, sheet, placeholder, status, retry, nearby: false,
+      loaded: false, request: null, failed: false, version: photoVersion, blob: null, lastUsed: 0};
+    retry.onclick = () => { page.failed = false; retry.hidden = true; pumpPhotos(); };
+    placeholder.append(status, retry); sheet.append(canvas, placeholder); wrapper.append(label, sheet); container.append(wrapper);
+    wrapper.photoPage = page; photoPages.push(page); photoObserver.observe(wrapper);
+  });
+}
+
+function pumpPhotos() {
+  if (state.locked || state.view !== "article") return;
+  while (photoActive < 2) {
+    const page = photoPages.find(item => item.nearby && !item.loaded && !item.request && !item.failed);
+    if (!page) return;
+    page.request = new AbortController(); photoActive += 1; loadPhotoPage(page);
+  }
+}
+
+async function loadPhotoPage(page) {
+  let url; const cached = Boolean(page.blob);
+  page.status.textContent = cached ? "Восстанавливаем фотографию…" : "Загружаем фотографию…";
   try {
-    const blob = await pageBlob("image", photos[index].id, 1, photoRequest.signal);
+    const blob = page.blob || await pageBlob("image", page.imageId, 1, page.request.signal);
+    if (!cached) cachePhoto(page, blob); else page.lastUsed = performance.now();
     url = URL.createObjectURL(blob);
     const img = new Image(); img.src = url; await img.decode();
-    if (version !== photoVersion || state.locked || state.view !== "article") return;
-    const canvas = byId("photo"); canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
-    canvas.getContext("2d").drawImage(img, 0, 0);
-    canvas.setAttribute("aria-label", `Фото препарата ${index + 1} из ${photos.length}`);
-    visible("photo");
-  } catch (error) { if (version === photoVersion) showError(error); }
-  finally { if (url) URL.revokeObjectURL(url); if (version === photoVersion) visible("photo-loading", false); }
+    if (page.version !== photoVersion || state.locked || !page.nearby || state.view !== "article") return;
+    page.photo.width = img.naturalWidth; page.photo.height = img.naturalHeight;
+    page.sheet.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
+    page.canvas.width = img.naturalWidth; page.canvas.height = img.naturalHeight;
+    page.canvas.getContext("2d").drawImage(img, 0, 0);
+    page.canvas.hidden = false; page.placeholder.hidden = true; page.loaded = true;
+  } catch (error) {
+    if (error.name !== "AbortError" && page.version === photoVersion) {
+      discardCachedPhoto(page); page.failed = true; page.status.textContent = error.message; page.retry.hidden = false;
+      if ([401, 403, 409].includes(error.status) || error.readingLimited) showError(error);
+    }
+  } finally {
+    if (url) URL.revokeObjectURL(url);
+    page.request = null; photoActive -= 1; pumpPhotos();
+  }
 }
 
 async function heartbeat() {
@@ -257,7 +339,26 @@ function clearDocuments() {
     page.canvas.width = 1; page.canvas.height = 1;
   }
   pdfPages = [];
+  pdfCacheBytes = 0;
   byId("documents").replaceChildren(); visible("documents", false);
+}
+
+function discardCachedPage(page) {
+  if (!page.blob) return;
+  pdfCacheBytes = Math.max(0, pdfCacheBytes - page.blob.size);
+  page.blob = null;
+}
+
+function cachePDFPage(page, blob) {
+  discardCachedPage(page);
+  page.blob = blob; page.lastUsed = performance.now(); pdfCacheBytes += blob.size;
+  while (pdfCacheBytes > PDF_CACHE_LIMIT) {
+    const oldest = pdfPages
+      .filter(item => item !== page && item.blob && !item.nearby && !item.request)
+      .sort((left, right) => left.lastUsed - right.lastUsed)[0];
+    if (!oldest) break;
+    discardCachedPage(oldest);
+  }
 }
 
 function setPdfScale(scale) {
@@ -283,8 +384,8 @@ function renderDocuments(documents) {
     button.onclick = () => setPdfScale(scale); controls.append(button);
   }
   container.append(controls);
-  // Only nearby pages have bitmaps. Scrolling away releases pixels and aborts
-  // pending requests; returning re-fetches through the authenticated API.
+  // Only nearby pages keep expensive decoded pixels. Compressed pages stay in
+  // bounded, memory-only cache so scrolling back does not contact the server.
   pdfObserver = new IntersectionObserver(entries => {
     for (const entry of entries) {
       const page = entry.target.pdfPage;
@@ -316,7 +417,8 @@ function renderDocuments(documents) {
       const status = window.document.createElement("span"); status.textContent = "Загружаем страницу…"; status.setAttribute("role", "status");
       const retry = window.document.createElement("button"); retry.textContent = "Повторить"; retry.hidden = true;
       const page = {documentId: document.id, number: index + 1, canvas, placeholder, status, retry,
-        nearby: false, loaded: false, request: null, failed: false, version: documentVersion};
+        nearby: false, loaded: false, request: null, failed: false, version: documentVersion,
+        blob: null, lastUsed: 0};
       retry.onclick = () => { page.failed = false; retry.hidden = true; pumpPDF(); };
       placeholder.append(status, retry); sheet.append(canvas, placeholder); wrapper.append(label, sheet); pages.append(wrapper);
       wrapper.pdfPage = page; pdfPages.push(page); pdfObserver.observe(wrapper);
@@ -335,10 +437,12 @@ function pumpPDF() {
 }
 
 async function loadPDFPage(page) {
-  let url;
-  page.status.textContent = "Загружаем страницу…";
+  let url; const cached = Boolean(page.blob);
+  page.status.textContent = cached ? "Восстанавливаем страницу…" : "Загружаем страницу…";
   try {
-    const blob = await pageBlob("document", page.documentId, page.number, page.request.signal);
+    const blob = page.blob || await pageBlob("document", page.documentId, page.number, page.request.signal);
+    if (!cached) cachePDFPage(page, blob);
+    else page.lastUsed = performance.now();
     url = URL.createObjectURL(blob);
     const img = new Image(); img.src = url; await img.decode();
     if (page.version !== documentVersion || state.locked || !page.nearby || state.view !== "article") return;
@@ -347,6 +451,7 @@ async function loadPDFPage(page) {
     page.canvas.hidden = false; page.placeholder.hidden = true; page.loaded = true;
   } catch (error) {
     if (error.name !== "AbortError" && page.version === documentVersion) {
+      discardCachedPage(page);
       page.failed = true; page.status.textContent = error.message; page.retry.hidden = false;
       if ([401, 403, 409].includes(error.status) || error.readingLimited) showError(error);
     }
@@ -520,7 +625,9 @@ byId("image-files").onchange = event => {
     try {
       for (const [index, file] of files.entries()) {
         byId("upload-status").textContent = `Загружаем ${index + 1} из ${files.length}…`;
-        if (file.size > state.session.max_image_bytes) { failures.push(`${file.name}: больше 10 МБ`); continue; }
+        if (file.size > state.session.max_image_bytes) {
+          failures.push(`${file.name}: больше ${Math.round(state.session.max_image_bytes / 1024 / 1024)} МБ`); continue;
+        }
         try { await api(`/api/admin/materials/${materialId}/images`, {method: "POST", file}); uploaded += 1; }
         catch (error) { if ([401, 403, 404].includes(error.status)) throw error; failures.push(`${file.name}: ${error.message}`); }
       }
@@ -584,17 +691,6 @@ async function uploadSelectedPDFs(files, input) {
 }
 byId("pdf-files").onchange = event => uploadSelectedPDFs(event.target.files, event.target);
 byId("pdf-upload").onclick = () => uploadSelectedPDFs(byId("pdf-files").files, byId("pdf-files"));
-let swipe = null;
-byId("photo-stage").addEventListener("pointerdown", event => { if (event.isPrimary) swipe = {x: event.clientX, y: event.clientY}; });
-byId("photo-stage").addEventListener("pointerup", event => {
-  if (!swipe) return;
-  const dx = event.clientX - swipe.x; const dy = event.clientY - swipe.y; swipe = null;
-  if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4) loadPhoto(state.photoIndex + (dx < 0 ? 1 : -1));
-});
-byId("photo-stage").addEventListener("pointercancel", () => { swipe = null; });
-byId("photo-stage").addEventListener("keydown", event => {
-  if (["ArrowLeft", "ArrowRight"].includes(event.key)) { event.preventDefault(); loadPhoto(state.photoIndex + (event.key === "ArrowLeft" ? -1 : 1)); }
-});
 
 function lockContent() {
   if (!state.session || state.view === "paywall") return;
@@ -611,7 +707,7 @@ async function resumeContent() {
     if (version !== privacyVersion || document.hidden || tg?.isActive === false) return;
     state.locked = false;
     if (allowed && state.view === "article" && state.material) {
-      await openArticle(state.material.id, state.photoIndex);
+      await openArticle(state.material.id);
       window.scrollTo(0, readerScroll);
     }
     if (state.locked || version !== privacyVersion || document.hidden || tg?.isActive === false) return;

@@ -41,8 +41,8 @@ class MediaStorage:
             with warnings.catch_warnings():
                 warnings.simplefilter("error", Image.DecompressionBombWarning)
                 with Image.open(source_file, formats=("JPEG", "PNG", "WEBP")) as source:
-                    if source.width * source.height > 20_000_000 or getattr(source, "n_frames", 1) != 1:
-                        raise InvalidImage("Используйте неподвижное фото размером до 20 мегапикселей.")
+                    if source.width * source.height > 50_000_000 or getattr(source, "n_frames", 1) != 1:
+                        raise InvalidImage("Используйте неподвижное фото размером до 50 мегапикселей.")
                     source.load()
                     oriented = ImageOps.exif_transpose(source)
                     oriented.thumbnail((4096, 4096), Image.Resampling.LANCZOS)

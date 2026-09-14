@@ -69,6 +69,7 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
     media = MediaStorage(settings.media_path)
     documents = DocumentStorage(settings.media_path)
     image_workers = asyncio.Semaphore(2)
+    image_uploads = asyncio.Semaphore(1)
     document_worker = asyncio.Semaphore(1)
     document_uploads = asyncio.Semaphore(2)
     image_requests: OrderedDict[int, deque[float]] = OrderedDict()
@@ -288,16 +289,16 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
             raise HTTPException(404, "Материал не найден.")
         # Read raw file bytes only after authentication, with an enforced limit
         # even for chunked requests or a forged/missing Content-Length.
-        data = bytearray()
-        async for chunk in request.stream():
-            if len(data) + len(chunk) > settings.max_image_bytes:
-                raise HTTPException(413, "Размер фото не должен превышать 10 МБ.")
-            data.extend(chunk)
-        try:
-            async with image_workers:
+        async with image_uploads:
+            data = bytearray()
+            async for chunk in request.stream():
+                if len(data) + len(chunk) > settings.max_image_bytes:
+                    raise HTTPException(413, f"Размер фото не должен превышать {settings.max_image_bytes // (1024 * 1024)} МБ.")
+                data.extend(chunk)
+            try:
                 filename = await run_in_threadpool(media.save, bytes(data))
-        except InvalidImage as exc:
-            raise HTTPException(422, str(exc)) from exc
+            except InvalidImage as exc:
+                raise HTTPException(422, str(exc)) from exc
         try:
             image_id = await database.add_image(material_id, filename)
         except BaseException as exc:

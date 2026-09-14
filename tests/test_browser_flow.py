@@ -140,24 +140,22 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         fill("material-category", str(destination_id))
         js("document.getElementById('material-form').requestSubmit()")
         idle()
-        assert len(asyncio.run(db.materials(destination_id))) == 1
+        moved_materials = asyncio.run(db.materials(destination_id))
+        assert len(moved_materials) == 1
+        first_image_id = asyncio.run(db.material(moved_materials[0]["id"]))["images"][0]["id"]
+        js("window.firstPhotoFetches=0;window.firstPageFetches=0;const trackedPhoto=arguments[0];const originalFetch=window.fetch;window.fetch=(...args)=>{const path=String(args[0]);if(path===trackedPhoto)window.firstPhotoFetches++;if(/\\/api\\/documents\\/\\d+\\/pages\\/1$/.test(path))window.firstPageFetches++;return originalFetch(...args)}", f"/api/images/{first_image_id}")
         click("preview-material")
-        wait_for("!document.getElementById('photo').hidden"); idle()
-        assert js("return document.getElementById('photo').width") == 800
+        wait_for("(document.querySelector('.photo-page canvas')?.width || 0) > 1"); idle()
+        assert js("return document.querySelector('.photo-page canvas').width") == 800
+        assert js("return document.querySelectorAll('.photo-page').length") == 2
         assert not js("return Boolean(window.stolen)")
-        assert js("return document.getElementById('next-photo') === null && document.getElementById('prev-photo') === null")
-        js("const stage=document.getElementById('photo-stage'); stage.dispatchEvent(new PointerEvent('pointerdown',{clientX:180,clientY:100,isPrimary:true})); stage.dispatchEvent(new PointerEvent('pointerup',{clientX:50,clientY:100,isPrimary:true}))")
-        wait_for("document.getElementById('photo-counter').textContent === '2 / 2'")
-        wait_for("!document.getElementById('photo').hidden")
-        js("const stage=document.getElementById('photo-stage'); stage.dispatchEvent(new PointerEvent('pointerdown',{clientX:50,clientY:100,isPrimary:true})); stage.dispatchEvent(new PointerEvent('pointerup',{clientX:180,clientY:100,isPrimary:true}))")
-        wait_for("document.getElementById('photo-counter').textContent === '1 / 2'")
-        wait_for("!document.getElementById('photo').hidden")
+        assert js("return document.getElementById('photo-stage') === null")
         js("window.dispatchEvent(new Event('blur'))")
         assert js("return !document.getElementById('privacy-shield').hidden")
         assert js("return document.getElementById('article-content').textContent") == ""
-        assert js("return document.getElementById('photo').width") == 1
+        assert js("return document.querySelectorAll('#gallery canvas').length") == 0
         click("resume"); wait_for("document.getElementById('privacy-shield').hidden")
-        wait_for("!document.getElementById('photo').hidden")
+        wait_for("(document.querySelector('.photo-page canvas')?.width || 0) > 1")
         assert js("return document.documentElement.scrollWidth <= window.innerWidth")
         Path("/tmp/rnimu-miniapp-reader.png").write_bytes(base64.b64decode(command("GET", "/screenshot")))
         click("fullscreen")
@@ -171,6 +169,19 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         js("document.querySelectorAll('.pdf-page')[7].scrollIntoView()")
         wait_for("document.querySelectorAll('.pdf-page canvas')[7].width > 1")
         wait_for("document.querySelectorAll('.pdf-page canvas')[0].width === 1")
+        fetches = js("return window.firstPageFetches")
+        js("document.querySelectorAll('.pdf-page')[0].scrollIntoView()")
+        wait_for("document.querySelectorAll('.pdf-page canvas')[0].width > 1")
+        assert js("return window.firstPageFetches") == fetches
+        js("document.querySelectorAll('.pdf-page')[7].scrollIntoView()")
+        wait_for("document.querySelectorAll('.pdf-page canvas')[7].width > 1")
+        wait_for("document.querySelector('.photo-page canvas').width === 1")
+        photo_fetches = js("return window.firstPhotoFetches")
+        js("document.querySelector('.photo-page').scrollIntoView()")
+        wait_for("document.querySelector('.photo-page canvas').width > 1")
+        assert js("return window.firstPhotoFetches") == photo_fetches
+        js("document.querySelectorAll('.pdf-page')[7].scrollIntoView()")
+        wait_for("document.querySelectorAll('.pdf-page canvas')[7].width > 1")
         scroll_before = js("return window.scrollY")
         js("window.dispatchEvent(new Event('blur'))")
         assert js("return document.querySelectorAll('#documents canvas').length") == 0
@@ -191,7 +202,7 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         wait_for("!document.getElementById('catalog').hidden"); idle()
         assert js("return document.getElementById('admin-toggle').hidden")
         js("document.querySelector('#category-list button').click()"); wait_for("!document.getElementById('materials').hidden"); idle()
-        js("document.querySelector('#material-list button').click()"); wait_for("!document.getElementById('photo').hidden"); idle()
+        js("document.querySelector('#material-list button').click()"); wait_for("(document.querySelector('.photo-page canvas')?.width || 0) > 1"); idle()
         assert not js("return Boolean(window.stolen)")
         with sqlite3.connect(settings.database_path) as connection:
             connection.execute("UPDATE users SET subscription_end=NULL WHERE user_id=2")
@@ -199,7 +210,7 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         click("resume")
         wait_for("!document.getElementById('paywall').hidden && document.getElementById('privacy-shield').hidden")
         assert js("return document.getElementById('article-content').textContent") == ""
-        assert js("return document.getElementById('photo').width") == 1
+        assert js("return document.querySelectorAll('#gallery canvas').length") == 0
         assert js("return document.querySelectorAll('#documents canvas').length") == 0
         # A non-subscriber gets no library entries.
         command("POST", "/url", {"url": f"http://127.0.0.1:{app_port}/test-shell?uid=3"})

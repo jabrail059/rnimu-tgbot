@@ -27,7 +27,7 @@ class Settings:
     yoomoney_notification_secret: str | None
     admin_ids: frozenset[int] = frozenset()
     media_path: str = "data/material_images"
-    max_image_bytes: int = 10 * 1024 * 1024
+    max_image_bytes: int = 50 * 1024 * 1024
     max_pdf_bytes: int = 512 * 1024 * 1024
     subscription_reminder_hour: int = 10
     read_pages_per_minute: int = 40
@@ -58,6 +58,12 @@ def get_settings() -> Settings:
         raise RuntimeError("SUBSCRIPTION_PRICE or SUBSCRIPTION_DAYS is invalid") from exc
     if price <= 0 or days <= 0:
         raise RuntimeError("SUBSCRIPTION_PRICE and SUBSCRIPTION_DAYS must be positive")
+    try:
+        image_size_mb = int(os.getenv("IMAGE_MAX_SIZE_MB", "50"))
+        if image_size_mb <= 0:
+            raise ValueError
+    except ValueError as exc:
+        raise RuntimeError("IMAGE_MAX_SIZE_MB must be a positive integer") from exc
     try:
         pdf_size_mb = int(os.getenv("PDF_MAX_SIZE_MB", "512"))
         if pdf_size_mb <= 0:
@@ -109,7 +115,8 @@ def get_settings() -> Settings:
         trust_proxy_headers=os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true",
         enable_legacy_yoomoney=legacy_enabled, yoomoney_wallet=legacy_wallet,
         yoomoney_notification_secret=legacy_secret,
-        admin_ids=admin_ids, media_path=media_path, max_pdf_bytes=pdf_size_mb * 1024 * 1024,
+        admin_ids=admin_ids, media_path=media_path,
+        max_image_bytes=image_size_mb * 1024 * 1024, max_pdf_bytes=pdf_size_mb * 1024 * 1024,
         subscription_reminder_hour=reminder_hour,
         **read_limits,
     )

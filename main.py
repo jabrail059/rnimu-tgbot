@@ -136,6 +136,10 @@ async def run() -> None:
     reminder_task: asyncio.Task[None] | None = None
     try:
         await database.initialize()
+        database_summary = await database.summary()
+        logger.info("Database ready: path=%s users=%s active_subscriptions=%s succeeded_payments=%s",
+                    database_summary["path"], database_summary["users"],
+                    database_summary["active_subscriptions"], database_summary["succeeded_payments"])
         await bot.set_my_commands([
             BotCommand(command="start", description="Начать знакомство с курсом"),
             BotCommand(command="id", description="Узнать свой Telegram ID"),

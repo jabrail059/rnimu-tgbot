@@ -130,6 +130,9 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         command("POST", f"/element/{element_id}/value", {"text": str(photo_path) + "\n" + str(photo_path)})
         wait_for("document.querySelectorAll('.image-row').length === 2"); idle()
         pdf_path = tmp_path / "Лекция.pdf"; pdf_path.write_bytes(pdf_bytes(page_count=8))
+        # Returning from the native file picker may overlap the access refresh.
+        # The chosen files must wait for it instead of being silently discarded.
+        js("run(() => new Promise(resolve => setTimeout(resolve, 400)))")
         element = command("POST", "/element", {"using": "css selector", "value": "#pdf-files"})
         element_id = next(iter(element.values()))
         command("POST", f"/element/{element_id}/value", {"text": str(pdf_path)})

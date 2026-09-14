@@ -17,8 +17,10 @@ class MediaStorage:
     """Private, normalized photos. Original names and metadata are never retained."""
 
     def __init__(self, path: str):
-        self.directory = Path(path).resolve()
-        public_directory = Path(__file__).resolve().parent.parent / "web"
+        project_root = Path(__file__).resolve().parent.parent
+        raw = Path(path).expanduser()
+        self.directory = (project_root / raw if not raw.is_absolute() else raw).resolve()
+        public_directory = project_root / "web"
         if self.directory.is_relative_to(public_directory):
             raise ValueError("Media storage must be outside web/")
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)

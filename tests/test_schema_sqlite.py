@@ -5,6 +5,13 @@ import asyncio
 
 from app.database import Database
 
+
+def test_relative_database_path_does_not_depend_on_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    database = Database("data/app.db")
+    project_root = Path(__file__).resolve().parent.parent
+    assert Path(database.path) == project_root / "data/app.db"
+
 # Schema snapshot of the earlier admin release, used as an upgrade fixture.
 def test_existing_admin_schema_survives_upgrade():
     with tempfile.TemporaryDirectory() as tmp:

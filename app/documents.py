@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import math
+import multiprocessing
 import os
 import re
+import resource
 import threading
 import uuid
 from contextlib import closing
@@ -16,6 +18,42 @@ from app.media import MediaStorage
 
 class InvalidPDF(ValueError):
     pass
+
+
+def _inspect_worker(directory: str, filename: str, connection) -> None:
+    """Inspect untrusted PDFs outside the long-running bot process."""
+    try:
+        resource.setrlimit(resource.RLIMIT_CPU, (35, 35))
+        resource.setrlimit(resource.RLIMIT_AS, (1536 * 1024**2, 1536 * 1024**2))
+        connection.send(("ok", DocumentStorage(directory).inspect(filename)))
+    except InvalidPDF as exc:
+        connection.send(("invalid", str(exc)))
+    except BaseException:
+        try:
+            connection.send(("error", None))
+        except BaseException:
+            pass
+    finally:
+        connection.close()
+
+
+def _render_worker(directory: str, filename: str, page_index: int, connection) -> None:
+    """Rasterize an untrusted PDF page without exposing the bot process to PDFium."""
+    try:
+        resource.setrlimit(resource.RLIMIT_CPU, (20, 20))
+        resource.setrlimit(resource.RLIMIT_AS, (1536 * 1024**2, 1536 * 1024**2))
+        connection.send(("ok", DocumentStorage(directory).render(filename, page_index)))
+    except IndexError:
+        connection.send(("missing", None))
+    except InvalidPDF as exc:
+        connection.send(("invalid", str(exc)))
+    except BaseException:
+        try:
+            connection.send(("error", None))
+        except BaseException:
+            pass
+    finally:
+        connection.close()
 
 
 # PDFium must never run concurrently in different threads, even on different
@@ -55,9 +93,67 @@ class DocumentStorage(MediaStorage):
             with _pdfium_lock, pdfium.PdfDocument(path) as document:
                 if not len(document):
                     raise InvalidPDF("В PDF нет страниц.")
+                if len(document) > 5000:
+                    raise InvalidPDF("В одном PDF должно быть не больше 5000 страниц.")
                 return [self._size(document.get_page_size(index)) for index in range(len(document))]
         except (pdfium.PdfiumError, OSError, RuntimeError, ValueError) as exc:
             raise InvalidPDF("Не удалось прочитать PDF. Проверьте файл и снимите пароль, если он установлен.") from exc
+
+    def inspect_with_timeout(self, filename: str, timeout: float = 45) -> list[tuple[float, float]]:
+        context = multiprocessing.get_context("spawn")
+        receiving, sending = context.Pipe(duplex=False)
+        process = context.Process(target=_inspect_worker, args=(str(self.directory), filename, sending), daemon=True)
+        process.start()
+        sending.close()
+        try:
+            if not receiving.poll(timeout):
+                raise InvalidPDF(f"Не удалось проверить PDF за {timeout:g} секунд. Попробуйте оптимизировать файл.")
+            status, value = receiving.recv()
+            if status == "ok":
+                return value
+            if status == "invalid":
+                raise InvalidPDF(value)
+            raise InvalidPDF("Не удалось безопасно проверить PDF. Выберите другой файл.")
+        except EOFError as exc:
+            raise InvalidPDF("Проверка PDF была остановлена из-за сложности файла. Выберите другой PDF.") from exc
+        finally:
+            receiving.close()
+            if process.is_alive():
+                process.terminate()
+            process.join(5)
+            if process.is_alive():
+                process.kill()
+                process.join(2)
+
+    def render_with_timeout(self, filename: str, page_index: int, timeout: float = 25) -> bytes:
+        context = multiprocessing.get_context("spawn")
+        receiving, sending = context.Pipe(duplex=False)
+        process = context.Process(
+            target=_render_worker, args=(str(self.directory), filename, page_index, sending), daemon=True
+        )
+        process.start()
+        sending.close()
+        try:
+            if not receiving.poll(timeout):
+                raise InvalidPDF("Страница PDF слишком долго обрабатывалась.")
+            status, value = receiving.recv()
+            if status == "ok":
+                return value
+            if status == "missing":
+                raise IndexError("PDF page not found")
+            if status == "invalid":
+                raise InvalidPDF(value)
+            raise InvalidPDF("Не удалось безопасно отобразить страницу PDF.")
+        except EOFError as exc:
+            raise InvalidPDF("Обработка страницы PDF была безопасно остановлена.") from exc
+        finally:
+            receiving.close()
+            if process.is_alive():
+                process.terminate()
+            process.join(5)
+            if process.is_alive():
+                process.kill()
+                process.join(2)
 
     def render(self, filename: str, page_index: int) -> bytes:
         try:

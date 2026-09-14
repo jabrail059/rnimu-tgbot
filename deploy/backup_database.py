@@ -8,7 +8,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 
-source = Path(os.environ.get("DATABASE_PATH", "/opt/rnimu-tgbot/data/app.db"))
+project_root = Path(__file__).resolve().parent.parent
+source = Path(os.environ.get("DATABASE_PATH", "data/app.db")).expanduser()
+if not source.is_absolute():
+    source = project_root / source
 destination_dir = Path(os.environ.get("DATABASE_BACKUP_DIR", "/var/backups/pathology-bot"))
 retention_days = int(os.environ.get("DATABASE_BACKUP_RETENTION_DAYS", "14"))
 if retention_days < 1:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import uuid
+from pathlib import Path
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -22,7 +23,11 @@ class PaymentActivation:
 
 class Database:
     def __init__(self, path: str):
-        self.path = path
+        # A service restart from another working directory must not silently
+        # create a fresh database and make subscriptions appear to disappear.
+        raw = Path(path).expanduser()
+        project_root = Path(__file__).resolve().parent.parent
+        self.path = str((project_root / raw if not raw.is_absolute() else raw).resolve())
 
     @asynccontextmanager
     async def _connect(self):
@@ -114,6 +119,13 @@ class Database:
                 FROM categories c LEFT JOIN materials m ON m.category_id=c.id
                 GROUP BY c.id ORDER BY c.id""")).fetchall()
             return [dict(row) for row in rows]
+
+    async def summary(self) -> dict:
+        async with self._connect() as db:
+            users = await (await db.execute("SELECT COUNT(*) FROM users")).fetchone()
+            active = await (await db.execute("SELECT COUNT(*) FROM users WHERE julianday(subscription_end)>julianday('now')")).fetchone()
+            payments = await (await db.execute("SELECT COUNT(*) FROM payments WHERE status='succeeded'")).fetchone()
+        return {"path": self.path, "users": users[0], "active_subscriptions": active[0], "succeeded_payments": payments[0]}
 
     async def category(self, category_id: int) -> dict | None:
         async with self._connect() as db:

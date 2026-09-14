@@ -247,7 +247,7 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
             async with document_worker:
                 # Access may expire while waiting for another page to render.
                 await access.check_delivery(request.state.reader_session, view)
-                page = await run_in_threadpool(documents.render, record["filename"], page_number - 1)
+                page = await run_in_threadpool(documents.render_with_timeout, record["filename"], page_number - 1)
         except (FileNotFoundError, IndexError):
             raise HTTPException(404, "Страница PDF не найдена.")
         except InvalidPDF as exc:
@@ -331,10 +331,11 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
                     await run_in_threadpool(target.write, chunk)
                 await run_in_threadpool(target.close)
                 async with document_worker:
-                    page_sizes = await run_in_threadpool(documents.inspect, filename)
+                    page_sizes = await run_in_threadpool(documents.inspect_with_timeout, filename)
                 document_id = await database.add_document(material_id, filename, title, size, page_sizes)
                 stored = True
-                return {"id": document_id, "page_count": len(page_sizes)}
+                return {"id": document_id, "title": title, "size_bytes": size,
+                        "page_sizes": page_sizes, "page_count": len(page_sizes)}
             except InvalidPDF as exc:
                 raise HTTPException(422, str(exc)) from exc
             except aiosqlite.IntegrityError as exc:

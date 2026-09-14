@@ -17,6 +17,7 @@ let pdfActive = 0;
 let pdfScale = 1;
 let readerScroll = 0;
 let heartbeatTimer = null;
+let pdfUploadRunning = false;
 
 if (tg) { tg.ready(); tg.expand(); }
 
@@ -424,7 +425,9 @@ function renderEditorImages() {
   (state.material?.documents || []).forEach(item => {
     const row = document.createElement("div"); row.className = "document-row";
     const label = document.createElement("span");
-    label.textContent = `${item.title} · ${item.page_sizes.length} стр. · ${(item.size_bytes / 1024 / 1024).toFixed(1)} МБ`;
+    const pageCount = Array.isArray(item.page_sizes) ? item.page_sizes.length : item.page_count || "?";
+    const size = Number.isFinite(item.size_bytes) ? ` · ${(item.size_bytes / 1024 / 1024).toFixed(1)} МБ` : "";
+    label.textContent = `${item.title || "PDF-документ"} · ${pageCount} стр.${size}`;
     const remove = document.createElement("button"); remove.className = "danger"; remove.textContent = "Удалить";
     remove.onclick = () => run(async () => {
       if (!window.confirm(`Удалить PDF «${item.title}»?`)) return;
@@ -528,15 +531,22 @@ byId("image-files").onchange = event => {
     } finally { event.target.value = ""; visible("upload-status", false); }
   });
 };
-byId("pdf-files").onchange = event => {
-  const files = Array.from(event.target.files || []); const materialId = state.material?.id;
-  run(async () => {
-    if (!materialId || !files.length) return;
-    visible("pdf-upload-status"); visible("pdf-upload-progress");
-    const failures = []; let uploaded = 0;
-    const wasDirty = state.dirty; setDirty(true);
-    try {
-      for (const [index, file] of files.entries()) {
+async function waitUntilIdle() {
+  while (state.busy) await new Promise(resolve => setTimeout(resolve, 50));
+}
+async function uploadSelectedPDFs(files, input) {
+  files = Array.from(files || []); const materialId = state.material?.id;
+  if (!materialId || !files.length || pdfUploadRunning) return;
+  pdfUploadRunning = true;
+  try {
+    await waitUntilIdle();
+    await run(async () => {
+      if (state.material?.id !== materialId || !files.length) throw new Error("Материал изменился. Выберите PDF ещё раз.");
+      visible("pdf-upload-status"); visible("pdf-upload-progress");
+      const failures = []; const uploadedDocuments = [];
+      const wasDirty = state.dirty; setDirty(true);
+      try {
+        for (const [index, file] of files.entries()) {
         if (file.size > state.session.max_pdf_bytes) {
           failures.push(`${file.name}: больше ${Math.round(state.session.max_pdf_bytes / 1024 / 1024)} МБ`); continue;
         }
@@ -547,19 +557,33 @@ byId("pdf-files").onchange = event => {
             : `PDF ${index + 1} из ${files.length}: проверяем страницы…`;
         };
         progress(0);
-        try { await uploadPDF(materialId, file, progress); uploaded += 1; }
+        try { uploadedDocuments.push(await uploadPDF(materialId, file, progress)); }
         catch (error) { if ([401, 403, 404].includes(error.status)) throw error; failures.push(`${file.name}: ${error.message}`); }
+        }
+        let refreshedDocuments = null;
+        if (uploadedDocuments.length) {
+          try {
+            const material = await api(`/api/materials/${materialId}`);
+            refreshedDocuments = material.documents;
+          } catch (error) {
+            if ([401, 403, 404].includes(error.status)) throw error;
+          }
+        }
+        state.material.documents = refreshedDocuments || [...(state.material.documents || []), ...uploadedDocuments];
+        renderEditorImages();
+        notice(`Добавлено PDF: ${uploadedDocuments.length} из ${files.length}.`);
+        if (failures.length) throw new Error(failures.join("\n"));
+      } finally {
+        setDirty(wasDirty); input.value = "";
+        if (!failures.length) {
+          setTimeout(() => { visible("pdf-upload-status", false); visible("pdf-upload-progress", false); }, 2500);
+        }
       }
-      const material = await api(`/api/materials/${materialId}`);
-      state.material.documents = material.documents; renderEditorImages();
-      notice(`Добавлено PDF: ${uploaded} из ${files.length}.`);
-      if (failures.length) throw new Error(failures.join("\n"));
-    } finally {
-      setDirty(wasDirty); event.target.value = "";
-      visible("pdf-upload-status", false); visible("pdf-upload-progress", false);
-    }
-  });
-};
+    });
+  } finally { pdfUploadRunning = false; }
+}
+byId("pdf-files").onchange = event => uploadSelectedPDFs(event.target.files, event.target);
+byId("pdf-upload").onclick = () => uploadSelectedPDFs(byId("pdf-files").files, byId("pdf-files"));
 let swipe = null;
 byId("photo-stage").addEventListener("pointerdown", event => { if (event.isPrimary) swipe = {x: event.clientX, y: event.clientY}; });
 byId("photo-stage").addEventListener("pointerup", event => {

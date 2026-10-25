@@ -25,10 +25,23 @@ def test_menu_has_subscription_author_and_payment_buttons(project, monkeypatch):
     keyboard = message.answer.call_args.kwargs["reply_markup"]
     buttons = [button for row in keyboard.inline_keyboard for button in row]
     assert any(button.callback_data == "buy" for button in buttons)
+    assert any(button.callback_data == "support" for button in buttons)
     assert all(button.callback_data not in {"menu", "course_info"} for button in buttons)
     assert any(button.web_app for button in buttons)
     asyncio.run(module.show_user_id(message))
     assert "Telegram ID: 2" in message.answer.call_args.args[0]
+
+
+def test_support_sends_new_message_with_vpn_advice(project, monkeypatch):
+    module = load_bot(monkeypatch, project)
+    message = SimpleNamespace(chat=SimpleNamespace(type="private"), answer=AsyncMock())
+    callback = SimpleNamespace(message=message, answer=AsyncMock())
+    asyncio.run(module.support_callback(callback))
+    callback.answer.assert_awaited_once()
+    text = message.answer.call_args.args[0]
+    assert "VPN" in text and "сменить страну" in text and "@eucliris" in text
+    button = message.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.url == "https://t.me/eucliris"
 
 
 def test_checkout_keeps_yookassa_flow_and_updated_label(project, monkeypatch):

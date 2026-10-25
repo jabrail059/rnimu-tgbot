@@ -32,12 +32,22 @@ bot = Bot(settings.bot_token, session=session)
 dp = Dispatcher()
 yookassa = YooKassaClient(settings)
 
+SUPPORT_TEXT = (
+    "Если у вас возникли вопросы по подписке, оплате или материалам, напишите в поддержку.\n\n"
+    "Если Mini App не открывается, закройте его и откройте снова из бота. "
+    "Если пользуетесь VPN, попробуйте отключить его или сменить страну подключения: "
+    "из-за выбранной страны приложение иногда может не открываться.\n\n"
+    "Если проблема осталась, напишите @eucliris. Опишите, что произошло, "
+    "и укажите свой Telegram ID — его покажет команда /id."
+)
+
 
 def main_keyboard() -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=f"Купить / продлить — {settings.subscription_price:.2f} ₽", callback_data="buy")]]
     if settings.enable_legacy_yoomoney:
         rows.append([InlineKeyboardButton(text="Оплатить через старый YooMoney (временно)", callback_data="buy_legacy")])
     rows.append([InlineKeyboardButton(text="Открыть приложение", web_app=WebAppInfo(url=settings.public_base_url))])
+    rows.append([InlineKeyboardButton(text="Поддержка", callback_data="support")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -73,6 +83,26 @@ async def send_menu(message: Message, user) -> None:
 async def show_user_id(message: Message) -> None:
     if message.from_user and message.chat.type == "private":
         await message.answer(f"Ваш Telegram ID: {message.from_user.id}")
+
+
+@dp.message(Command("support"))
+async def support_command(message: Message) -> None:
+    if message.chat.type == "private":
+        await send_support(message)
+
+
+async def send_support(message: Message) -> None:
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Написать в поддержку", url="https://t.me/eucliris")
+    ]])
+    await message.answer(SUPPORT_TEXT, reply_markup=keyboard)
+
+
+@dp.callback_query(F.data == "support")
+async def support_callback(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if callback.message and callback.message.chat.type == "private":
+        await send_support(callback.message)
 
 
 @dp.callback_query(F.data.in_({"menu", "course_info"}))
@@ -143,6 +173,7 @@ async def run() -> None:
         await bot.set_my_commands([
             BotCommand(command="start", description="Начать знакомство с курсом"),
             BotCommand(command="id", description="Узнать свой Telegram ID"),
+            BotCommand(command="support", description="Помощь и поддержка"),
         ])
         await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Материалы", web_app=WebAppInfo(url=settings.public_base_url)))
         web_app = create_app(settings, database, bot)

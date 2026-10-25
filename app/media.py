@@ -75,7 +75,12 @@ class MediaStorage:
         return filename
 
     def render(self, filename: str) -> bytes:
-        photo = self._decode(self._path(filename))
+        path = self._path(filename)
+        # Every UUID JPEG written by this app was normalized on upload.
+        # Re-decoding and encoding it on every read is expensive and adds loss.
+        if path.suffix == ".jpg":
+            return path.read_bytes()
+        photo = self._decode(path)
         result = io.BytesIO()
         photo.save(result, format="JPEG", quality=92)
         return result.getvalue()

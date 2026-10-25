@@ -135,6 +135,7 @@ def test_images_private_without_watermarks_and_not_cached(project):
     assert normalized.size == (800, 600) and not normalized.getexif()
     assert all(low == high for low, high in normalized.getextrema())
     record = asyncio.run(db.image(image_id))
+    assert first.content == (Path(settings.media_path) / record["filename"]).read_bytes()
     assert client.get(f"/static/{record['filename']}").status_code == 404
     assert client.get(f"/data/material_images/{record['filename']}").status_code == 404
     with sqlite3.connect(settings.database_path) as connection:

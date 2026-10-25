@@ -10,6 +10,7 @@ let photoVersion = 0;
 let photoObserver = null;
 let photoPages = [];
 let photoActive = 0;
+let photoPriority = null;
 let photoCacheBytes = 0;
 let photoScale = 1;
 const PHOTO_CACHE_LIMIT = 64 * 1024 * 1024;
@@ -19,6 +20,7 @@ let documentVersion = 0;
 let pdfObserver = null;
 let pdfPages = [];
 let pdfActive = 0;
+let pdfPriority = null;
 let pdfScale = 1;
 let readerScroll = 0;
 let heartbeatTimer = null;
@@ -55,8 +57,8 @@ function clearPhotos() {
     page.request?.abort();
     page.canvas.width = 1; page.canvas.height = 1;
   }
-  photoPages = []; photoCacheBytes = 0;
-  byId("gallery").querySelectorAll(".photo-controls").forEach(control => control.remove());
+  photoPages = []; photoCacheBytes = 0; photoPriority = null;
+  byId("gallery").querySelectorAll(".photo-controls, .photo-jump").forEach(control => control.remove());
   byId("photo-pages").replaceChildren(); visible("gallery", false);
 }
 
@@ -251,6 +253,31 @@ function setPhotoScale(scale) {
   });
 }
 
+function pageJump(kind, title, count, targetAt, prioritize) {
+  const jump = document.createElement("form"); jump.className = `${kind}-jump page-jump`;
+  const jumpLabel = document.createElement("label"); jumpLabel.textContent = kind === "photo" ? "Фото" : "Страница";
+  const pageNumber = document.createElement("input");
+  pageNumber.type = "number"; pageNumber.inputMode = "numeric";
+  pageNumber.min = "1"; pageNumber.max = String(count);
+  pageNumber.step = "1"; pageNumber.required = true; pageNumber.value = "1";
+  pageNumber.setAttribute("aria-label", `${kind === "photo" ? "Номер фотографии" : "Номер страницы PDF"} «${title}»`);
+  jumpLabel.append(pageNumber);
+  const total = document.createElement("span"); total.textContent = `из ${count}`;
+  const go = document.createElement("button"); go.type = "submit"; go.textContent = "Перейти";
+  jump.append(jumpLabel, total, go);
+  jump.onsubmit = event => {
+    event.preventDefault();
+    if (!pageNumber.checkValidity()) { pageNumber.reportValidity(); return; }
+    const target = targetAt(pageNumber.valueAsNumber - 1);
+    if (target) {
+      pageNumber.blur();
+      target.scrollIntoView({block: "start", behavior: "auto"});
+      prioritize(target);
+    }
+  };
+  return jump;
+}
+
 function renderPhotos(photos) {
   clearPhotos();
   if (!photos.length || state.locked) return;
@@ -267,6 +294,13 @@ function renderPhotos(photos) {
     button.onclick = () => setPhotoScale(scale); controls.append(button);
   }
   gallery.insertBefore(controls, container);
+  gallery.insertBefore(pageJump("photo", byId("article-title").textContent, photos.length,
+    index => container.children[index], target => {
+      photoPriority = target.photoPage;
+      photoPages.forEach(page => { if (page !== photoPriority) page.request?.abort(); });
+      photoPriority.nearby = true;
+      pumpPhotos();
+    }), container);
   photoObserver = new IntersectionObserver(entries => {
     for (const entry of entries) {
       const page = entry.target.photoPage;
@@ -279,12 +313,13 @@ function renderPhotos(photos) {
     }
     pumpPhotos();
   }, {rootMargin: "800px 0px"});
+  const fragment = document.createDocumentFragment();
   photos.forEach((photo, index) => {
     const wrapper = document.createElement("div"); wrapper.className = "photo-page";
     const label = document.createElement("p"); label.className = "photo-page-label";
     label.textContent = `Фотография ${index + 1} из ${photos.length}`;
     const sheet = document.createElement("div"); sheet.className = "photo-sheet";
-    if (photo.width && photo.height) sheet.style.aspectRatio = `${photo.width} / ${photo.height}`;
+    sheet.style.aspectRatio = photo.width && photo.height ? `${photo.width} / ${photo.height}` : "4 / 3";
     const canvas = document.createElement("canvas"); canvas.width = 1; canvas.height = 1; canvas.hidden = true;
     canvas.setAttribute("role", "img"); canvas.setAttribute("aria-label", label.textContent);
     const placeholder = document.createElement("div"); placeholder.className = "photo-placeholder";
@@ -293,15 +328,17 @@ function renderPhotos(photos) {
     const page = {imageId: photo.id, photo, canvas, sheet, placeholder, status, retry, nearby: false,
       loaded: false, request: null, failed: false, version: photoVersion, blob: null, lastUsed: 0};
     retry.onclick = () => { page.failed = false; retry.hidden = true; pumpPhotos(); };
-    placeholder.append(status, retry); sheet.append(canvas, placeholder); wrapper.append(label, sheet); container.append(wrapper);
+    placeholder.append(status, retry); sheet.append(canvas, placeholder); wrapper.append(label, sheet); fragment.append(wrapper);
     wrapper.photoPage = page; photoPages.push(page); photoObserver.observe(wrapper);
   });
+  container.append(fragment);
 }
 
 function pumpPhotos() {
   if (state.locked || state.view !== "article") return;
   while (photoActive < 2) {
-    const page = photoPages.find(item => item.nearby && !item.loaded && !item.request && !item.failed);
+    const available = item => item.nearby && !item.loaded && !item.request && !item.failed;
+    const page = (photoPriority && available(photoPriority) ? photoPriority : null) || photoPages.find(available);
     if (!page) return;
     page.request = new AbortController(); photoActive += 1; loadPhotoPage(page);
   }
@@ -321,6 +358,7 @@ async function loadPhotoPage(page) {
     page.canvas.width = img.naturalWidth; page.canvas.height = img.naturalHeight;
     page.canvas.getContext("2d").drawImage(img, 0, 0);
     page.canvas.hidden = false; page.placeholder.hidden = true; page.loaded = true;
+    if (photoPriority === page) photoPriority = null;
   } catch (error) {
     if (error.name !== "AbortError" && page.version === photoVersion) {
       discardCachedPhoto(page); page.failed = true; page.status.textContent = error.message; page.retry.hidden = false;
@@ -359,7 +397,7 @@ function clearDocuments() {
     page.request?.abort();
     page.canvas.width = 1; page.canvas.height = 1;
   }
-  pdfPages = [];
+  pdfPages = []; pdfPriority = null;
   pdfCacheBytes = 0;
   byId("documents").replaceChildren(); visible("documents", false);
 }
@@ -420,12 +458,20 @@ function renderDocuments(documents) {
     pumpPDF();
   }, {rootMargin: "300px 0px"});
   for (const document of documents) {
+    const section = window.document.createElement("section"); section.className = "pdf-document";
     const heading = window.document.createElement("h3"); heading.textContent = document.title;
     const hint = window.document.createElement("p"); hint.className = "muted";
     hint.textContent = `${document.page_sizes.length} стр. · Листайте вниз для чтения`;
     const pages = window.document.createElement("div"); pages.className = "pdf-pages";
     pages.dataset.scale = String(pdfScale);
-    container.append(heading, hint, pages);
+    const jump = pageJump("pdf", document.title, document.page_sizes.length,
+      index => pages.children[index], target => {
+        pdfPriority = target.pdfPage;
+        pdfPages.forEach(page => { if (page !== pdfPriority) page.request?.abort(); });
+        pdfPriority.nearby = true;
+        pumpPDF();
+      });
+    section.append(heading, hint, jump, pages);
     document.page_sizes.forEach(([width, height], index) => {
       const wrapper = window.document.createElement("div"); wrapper.className = "pdf-page";
       const label = window.document.createElement("p"); label.className = "pdf-page-label";
@@ -444,13 +490,15 @@ function renderDocuments(documents) {
       placeholder.append(status, retry); sheet.append(canvas, placeholder); wrapper.append(label, sheet); pages.append(wrapper);
       wrapper.pdfPage = page; pdfPages.push(page); pdfObserver.observe(wrapper);
     });
+    container.append(section);
   }
 }
 
 function pumpPDF() {
   if (state.locked || state.view !== "article") return;
   while (pdfActive < 2) {
-    const page = pdfPages.find(item => item.nearby && !item.loaded && !item.request && !item.failed);
+    const available = item => item.nearby && !item.loaded && !item.request && !item.failed;
+    const page = (pdfPriority && available(pdfPriority) ? pdfPriority : null) || pdfPages.find(available);
     if (!page) return;
     page.request = new AbortController(); pdfActive += 1;
     loadPDFPage(page);
@@ -470,6 +518,7 @@ async function loadPDFPage(page) {
     page.canvas.width = img.naturalWidth; page.canvas.height = img.naturalHeight;
     page.canvas.getContext("2d").drawImage(img, 0, 0);
     page.canvas.hidden = false; page.placeholder.hidden = true; page.loaded = true;
+    if (pdfPriority === page) pdfPriority = null;
   } catch (error) {
     if (error.name !== "AbortError" && page.version === documentVersion) {
       discardCachedPage(page);

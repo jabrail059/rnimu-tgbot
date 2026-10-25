@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import re
 import resource
+import tempfile
 import threading
 import uuid
 from contextlib import closing
@@ -60,10 +61,15 @@ def _render_worker(directory: str, filename: str, page_index: int, connection) -
 # documents. All native handles are opened and closed while holding this lock.
 # https://pypdfium2.readthedocs.io/en/stable/python_api.html#incompatibility-with-threading
 _pdfium_lock = threading.Lock()
+_worker_context = multiprocessing.get_context(
+    "forkserver" if "forkserver" in multiprocessing.get_all_start_methods() else "spawn"
+)
 
 
 class DocumentStorage(MediaStorage):
     """Private originals; the API exposes only rasterized pages, never the PDF."""
+
+    CACHE_LIMIT = 256 * 1024 * 1024
 
     def _path(self, filename: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{32}\.pdf", filename):
@@ -100,7 +106,7 @@ class DocumentStorage(MediaStorage):
             raise InvalidPDF("Не удалось прочитать PDF. Проверьте файл и снимите пароль, если он установлен.") from exc
 
     def inspect_with_timeout(self, filename: str, timeout: float = 45) -> list[tuple[float, float]]:
-        context = multiprocessing.get_context("spawn")
+        context = _worker_context
         receiving, sending = context.Pipe(duplex=False)
         process = context.Process(target=_inspect_worker, args=(str(self.directory), filename, sending), daemon=True)
         process.start()
@@ -126,7 +132,7 @@ class DocumentStorage(MediaStorage):
                 process.join(2)
 
     def render_with_timeout(self, filename: str, page_index: int, timeout: float = 25) -> bytes:
-        context = multiprocessing.get_context("spawn")
+        context = _worker_context
         receiving, sending = context.Pipe(duplex=False)
         process = context.Process(
             target=_render_worker, args=(str(self.directory), filename, page_index, sending), daemon=True
@@ -154,6 +160,71 @@ class DocumentStorage(MediaStorage):
             if process.is_alive():
                 process.kill()
                 process.join(2)
+
+    def _cache_path(self, filename: str, page_index: int) -> Path:
+        source = self._path(filename)
+        if page_index < 0:
+            raise IndexError("PDF page not found")
+        stat = source.stat()
+        return self.directory / ".rendered-pages" / f"{source.stem}-{page_index}-{stat.st_mtime_ns}-{stat.st_size}.jpg"
+
+    def cached_page(self, filename: str, page_index: int) -> bytes | None:
+        path = self._cache_path(filename, page_index)
+        try:
+            if path.is_symlink():
+                return None
+            data = path.read_bytes()
+            os.utime(path, None)
+            return data
+        except FileNotFoundError:
+            return None
+
+    def cache_page(self, filename: str, page_index: int, data: bytes) -> None:
+        path = self._cache_path(filename, page_index)
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        path.parent.chmod(0o700)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".page-", delete=False) as output:
+                temporary = Path(output.name)
+                output.write(data)
+            temporary.chmod(0o600)
+            os.replace(temporary, path)
+            try:
+                if self._cache_path(filename, page_index) != path:
+                    path.unlink(missing_ok=True)
+                    return
+            except FileNotFoundError:
+                path.unlink(missing_ok=True)
+                return
+            self._trim_cache()
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def _trim_cache(self) -> None:
+        directory = self.directory / ".rendered-pages"
+        pages = sorted((path for path in directory.glob("*.jpg") if path.is_file() and not path.is_symlink()),
+                       key=lambda path: path.stat().st_mtime_ns)
+        total = sum(path.stat().st_size for path in pages)
+        for path in pages:
+            if total <= self.CACHE_LIMIT:
+                break
+            size = path.stat().st_size
+            path.unlink(missing_ok=True)
+            total -= size
+
+    def delete(self, filename: str) -> None:
+        source = self._path(filename)
+        source.unlink(missing_ok=True)
+        directory = self.directory / ".rendered-pages"
+        if directory.is_dir():
+            for path in directory.glob(f"{source.stem}-*.jpg"):
+                path.unlink(missing_ok=True)
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
 
     def render(self, filename: str, page_index: int) -> bytes:
         try:

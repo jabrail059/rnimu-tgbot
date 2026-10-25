@@ -11,7 +11,7 @@ from typing import Literal
 from urllib.parse import parse_qsl, urlsplit
 
 import aiosqlite
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -76,6 +76,33 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
     access = AccessControl(database, settings)
     public = urlsplit(settings.public_base_url)
     public_origin = f"{public.scheme}://{public.netloc}"
+
+    async def rendered_document_page(filename: str, page_index: int, before_render=None) -> bytes:
+        page = await run_in_threadpool(documents.cached_page, filename, page_index)
+        if page is not None:
+            return page
+        async with document_worker:
+            if before_render is not None:
+                await before_render()
+            page = await run_in_threadpool(documents.cached_page, filename, page_index)
+            if page is None:
+                page = await run_in_threadpool(documents.render_with_timeout, filename, page_index)
+                try:
+                    await run_in_threadpool(documents.cache_page, filename, page_index, page)
+                except OSError:
+                    logger.warning("Could not cache rendered PDF page %s:%s", filename, page_index + 1, exc_info=True)
+            return page
+
+    async def warm_document(filename: str, page_count: int) -> None:
+        # Response is already sent. Prepare the opening pages for the first reader.
+        for page_index in range(min(page_count, 1)):
+            try:
+                await rendered_document_page(filename, page_index)
+            except (FileNotFoundError, IndexError):
+                return  # The administrator deleted the document meanwhile.
+            except (InvalidPDF, OSError):
+                logger.warning("Could not pre-render PDF page %s:%s", filename, page_index + 1, exc_info=True)
+                return
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -244,11 +271,14 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
             raise HTTPException(404, "Страница PDF не найдена.")
         view = request.headers.get("x-read-view", "")
         await access.consume_ticket(request.state.reader_session, view, request.headers.get("x-page-ticket", ""), f"document:{document_id}:{page_number}")
+        async def before_render():
+            await access.check_delivery(request.state.reader_session, view)
+            if await request.is_disconnected():
+                raise HTTPException(499, "Запрос отменён.")
         try:
-            async with document_worker:
-                # Access may expire while waiting for another page to render.
-                await access.check_delivery(request.state.reader_session, view)
-                page = await run_in_threadpool(documents.render_with_timeout, record["filename"], page_number - 1)
+            page = await rendered_document_page(
+                record["filename"], page_number - 1, before_render
+            )
         except (FileNotFoundError, IndexError):
             raise HTTPException(404, "Страница PDF не найдена.")
         except InvalidPDF as exc:
@@ -309,7 +339,7 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
         return {"id": image_id}
 
     @app.post("/api/admin/materials/{material_id}/documents", status_code=201, dependencies=[Depends(admin)])
-    async def upload_document(material_id: int, request: Request, title: str = "Документ.pdf"):
+    async def upload_document(material_id: int, request: Request, background_tasks: BackgroundTasks, title: str = "Документ.pdf"):
         title = title.strip()
         if not title or len(title) > 300:
             raise HTTPException(422, "Название PDF должно содержать от 1 до 300 символов.")
@@ -335,6 +365,7 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
                     page_sizes = await run_in_threadpool(documents.inspect_with_timeout, filename)
                 document_id = await database.add_document(material_id, filename, title, size, page_sizes)
                 stored = True
+                background_tasks.add_task(warm_document, filename, len(page_sizes))
                 return {"id": document_id, "title": title, "size_bytes": size,
                         "page_sizes": page_sizes, "page_count": len(page_sizes)}
             except InvalidPDF as exc:

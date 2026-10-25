@@ -129,7 +129,7 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         element_id = next(iter(element.values()))
         command("POST", f"/element/{element_id}/value", {"text": str(photo_path) + "\n" + str(photo_path)})
         wait_for("document.querySelectorAll('.image-row').length === 2"); idle()
-        pdf_path = tmp_path / "Лекция.pdf"; pdf_path.write_bytes(pdf_bytes(page_count=8))
+        pdf_path = tmp_path / "Лекция.pdf"; pdf_path.write_bytes(pdf_bytes(page_count=320))
         # Returning from the native file picker may overlap the access refresh.
         # The chosen files must wait for it instead of being silently discarded.
         js("run(() => new Promise(resolve => setTimeout(resolve, 400)))")
@@ -142,12 +142,30 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         idle()
         moved_materials = asyncio.run(db.materials(destination_id))
         assert len(moved_materials) == 1
-        first_image_id = asyncio.run(db.material(moved_materials[0]["id"]))["images"][0]["id"]
-        js("window.firstPhotoFetches=0;window.firstPageFetches=0;const trackedPhoto=arguments[0];const originalFetch=window.fetch;window.fetch=(...args)=>{const path=String(args[0]);if(path===trackedPhoto)window.firstPhotoFetches++;if(/\\/api\\/documents\\/\\d+\\/pages\\/1$/.test(path))window.firstPageFetches++;return originalFetch(...args)}", f"/api/images/{first_image_id}")
+        material_id = moved_materials[0]["id"]
+        first_image_id = asyncio.run(db.material(material_id))["images"][0]["id"]
+        first_filename = asyncio.run(db.image(first_image_id))["filename"]
+        normalized_photo = (Path(settings.media_path) / first_filename).read_bytes()
+        with sqlite3.connect(settings.database_path) as connection:
+            for index in range(298):
+                filename = f"{index + 1:032x}.jpg"
+                (Path(settings.media_path) / filename).write_bytes(normalized_photo)
+                connection.execute("INSERT INTO material_images(material_id, filename, position) VALUES (?, ?, ?)",
+                                   (material_id, filename, index + 2))
+        js("window.firstPhotoFetches=0;window.firstPageFetches=0;window.photoFetched=[];const trackedPhoto=arguments[0];const originalFetch=window.fetch;window.fetch=(...args)=>{const path=String(args[0]);if(path===trackedPhoto)window.firstPhotoFetches++;if(/^\\/api\\/images\\/\\d+$/.test(path))window.photoFetched.push(path);if(/\\/api\\/documents\\/\\d+\\/pages\\/1$/.test(path))window.firstPageFetches++;return originalFetch(...args)}", f"/api/images/{first_image_id}")
         click("preview-material")
         wait_for("(document.querySelector('.photo-page canvas')?.width || 0) > 1"); idle()
         assert js("return document.querySelector('.photo-page canvas').width") == 800
-        assert js("return document.querySelectorAll('.photo-page').length") == 2
+        assert js("return document.querySelectorAll('.photo-page').length") == 300
+        assert js("return document.querySelector('.photo-jump input').max") == "300"
+        photo_fetches_before_jump = js("return window.photoFetched.length")
+        target_photo = js("return document.querySelectorAll('.photo-page')[299].photoPage.imageId")
+        js("const form=document.querySelector('.photo-jump');form.querySelector('input').value='300';form.requestSubmit()")
+        wait_for("document.querySelectorAll('.photo-page canvas')[299].width > 1")
+        assert js("return window.photoFetched[arguments[0]]", photo_fetches_before_jump) == f"/api/images/{target_photo}"
+        assert js("return window.photoFetched.length < 15")
+        js("document.querySelectorAll('.photo-page')[0].scrollIntoView()")
+        wait_for("document.querySelectorAll('.photo-page canvas')[0].width > 1")
         assert js("return document.querySelectorAll('[data-photo-scale]').length") == 3
         js("document.querySelector('[data-photo-scale=\"1.65\"]').click()")
         assert js("return document.getElementById('photo-pages').dataset.scale") == "1.65"
@@ -167,9 +185,15 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         assert js("return window.Telegram.WebApp.isFullscreen && document.getElementById('fullscreen').textContent === 'Свернуть экран'")
         click("fullscreen")
         assert not js("return window.Telegram.WebApp.isFullscreen")
+        js("window.pdfFetched=[];const trackedFetch=window.fetch;window.fetch=(...args)=>{const path=String(args[0]);if(/\\/api\\/documents\\/\\d+\\/pages\\/\\d+$/.test(path))window.pdfFetched.push(path);return trackedFetch(...args)}")
+        js("const form=document.querySelector('.pdf-jump');form.querySelector('input').value='300';form.requestSubmit()")
+        wait_for("document.querySelectorAll('.pdf-page canvas')[299].width > 1")
+        assert js("return window.pdfFetched[0].endsWith('/pages/300')")
+        assert js("return document.querySelector('.pdf-jump input').max") == "320"
+        assert not js("return window.pdfFetched.some(path => /\\/pages\\/[3-5]$/.test(path))")
         js("document.querySelectorAll('.pdf-page')[0].scrollIntoView()")
         wait_for("document.querySelectorAll('.pdf-page canvas')[0].width > 1")
-        assert js("return document.querySelectorAll('.pdf-page').length") == 8
+        assert js("return document.querySelectorAll('.pdf-page').length") == 320
         assert js("return document.querySelectorAll('#documents iframe, #documents embed, #documents a').length") == 0
         js("document.querySelectorAll('.pdf-page')[7].scrollIntoView()")
         wait_for("document.querySelectorAll('.pdf-page canvas')[7].width > 1")

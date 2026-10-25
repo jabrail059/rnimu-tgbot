@@ -83,6 +83,35 @@ def test_pdf_pages_private_ordered_and_original_not_exposed(project):
     assert client.get(path, headers=auth(2)).status_code == 403
 
 
+def test_rendered_pages_are_reused_after_restart_and_removed_with_document(project, monkeypatch):
+    client, db, settings = project
+    _, material = create_material(client)
+    document_id = upload(client, material).json()["id"]
+    calls = []
+    original = DocumentStorage.render_with_timeout
+
+    def counted(self, filename, page_index, timeout=25):
+        calls.append(page_index)
+        return original(self, filename, page_index, timeout)
+
+    monkeypatch.setattr(DocumentStorage, "render_with_timeout", counted)
+    path = f"/api/documents/{document_id}/pages/3"
+    first = client.get(path, headers=auth(2))
+    assert first.status_code == 200 and calls == [2]
+    assert client.get(path, headers=auth(2)).content == first.content
+    with TestClient(create_app(settings, db), database=db) as restarted:
+        assert restarted.get(path, headers=auth(2)).content == first.content
+    assert calls == [2]
+    record = asyncio.run(db.document(document_id))
+    storage = DocumentStorage(settings.media_path)
+    assert storage.cached_page(record["filename"], 0) is not None
+    cached = storage._cache_path(record["filename"], 2)
+    assert cached.stat().st_mode & 0o777 == 0o600
+    assert cached.parent.stat().st_mode & 0o777 == 0o700
+    assert client.delete(f"/api/admin/documents/{document_id}", headers=auth(1)).status_code == 200
+    assert not cached.exists() and not list(Path(settings.media_path).iterdir())
+
+
 @pytest.mark.parametrize("kind", ["documents", "materials", "categories"])
 def test_pdf_deletion_and_cascade_remove_private_files(project, kind):
     client, db, settings = project

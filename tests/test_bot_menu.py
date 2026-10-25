@@ -44,6 +44,37 @@ def test_support_sends_new_message_with_vpn_advice(project, monkeypatch):
     assert button.url == "https://t.me/eucliris"
 
 
+def test_admin_announcement_requires_confirmation_and_cannot_repeat(project, monkeypatch):
+    module = load_bot(monkeypatch, project)
+    module.announcement_drafts.clear()
+    send = AsyncMock()
+    monkeypatch.setattr(module.bot, "send_message", send)
+    monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
+    message = SimpleNamespace(from_user=SimpleNamespace(id=1), chat=SimpleNamespace(type="private"),
+                              text="/announce Новые материалы доступны", answer=AsyncMock())
+    asyncio.run(module.announce(message))
+    assert "Предпросмотр для 3 пользователей" in message.answer.call_args.args[0]
+    assert send.await_count == 0
+    button = message.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    callback = SimpleNamespace(from_user=SimpleNamespace(id=1), chat=message.chat,
+                               message=SimpleNamespace(chat=message.chat, answer=AsyncMock()),
+                               data=button.callback_data, answer=AsyncMock())
+    asyncio.run(module.announce_action(callback))
+    assert send.await_count == 3
+    assert all(call.args[1] == "Новые материалы доступны" for call in send.call_args_list)
+    assert "Отправлено: 3" in callback.message.answer.call_args.args[0]
+    asyncio.run(module.announce_action(callback))
+    assert send.await_count == 3
+
+
+def test_non_admin_cannot_announce(project, monkeypatch):
+    module = load_bot(monkeypatch, project)
+    message = SimpleNamespace(from_user=SimpleNamespace(id=2), chat=SimpleNamespace(type="private"),
+                              text="/announce Текст", answer=AsyncMock())
+    asyncio.run(module.announce(message))
+    message.answer.assert_not_awaited()
+
+
 def test_checkout_keeps_yookassa_flow_and_updated_label(project, monkeypatch):
     _, db, settings = project
     module = load_bot(monkeypatch, project)

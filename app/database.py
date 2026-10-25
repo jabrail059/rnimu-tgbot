@@ -112,6 +112,11 @@ class Database:
             await db.commit()
         os.chmod(self.path, 0o600)
 
+    async def announcement_recipients(self) -> list[int]:
+        async with self._connect() as db:
+            rows = await (await db.execute("SELECT user_id FROM users ORDER BY user_id")).fetchall()
+            return [row[0] for row in rows]
+
     async def categories(self) -> list[dict]:
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row

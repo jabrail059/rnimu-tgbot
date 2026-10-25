@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import uvicorn
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart
 from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonWebApp, Message, WebAppInfo
 from yoomoney import Quickpay
@@ -31,6 +32,7 @@ session = AiohttpSession(proxy=settings.proxy_url) if settings.proxy_url else Ai
 bot = Bot(settings.bot_token, session=session)
 dp = Dispatcher()
 yookassa = YooKassaClient(settings)
+announcement_drafts: dict[int, tuple[str, str, list[int]]] = {}
 
 SUPPORT_TEXT = (
     "Если у вас возникли вопросы по подписке, оплате или материалам, напишите в поддержку.\n\n"
@@ -83,6 +85,82 @@ async def send_menu(message: Message, user) -> None:
 async def show_user_id(message: Message) -> None:
     if message.from_user and message.chat.type == "private":
         await message.answer(f"Ваш Telegram ID: {message.from_user.id}")
+
+
+@dp.message(Command("announce"))
+async def announce(message: Message) -> None:
+    if not message.from_user or message.from_user.id not in settings.admin_ids or message.chat.type != "private":
+        return
+    text = (message.text or "").partition(" ")[2].strip()
+    if not text or len(text) > 3500:
+        await message.answer("Напишите: /announce текст объявления (до 3500 символов).")
+        return
+    recipients = await database.announcement_recipients()
+    token = uuid.uuid4().hex
+    announcement_drafts[message.from_user.id] = (token, text, recipients)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Отправить", callback_data=f"announce:send:{token}"),
+        InlineKeyboardButton(text="Отмена", callback_data=f"announce:cancel:{token}"),
+    ]])
+    await message.answer(f"Предпросмотр для {len(recipients)} пользователей:\n\n{text}", reply_markup=keyboard)
+
+
+@dp.callback_query(F.data.startswith("announce:"))
+async def announce_action(callback: CallbackQuery) -> None:
+    user = callback.from_user
+    if user.id not in settings.admin_ids or not callback.message or callback.message.chat.type != "private":
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    try:
+        _, action, token = callback.data.split(":", 2)
+    except (AttributeError, ValueError):
+        await callback.answer("Объявление устарело", show_alert=True)
+        return
+    draft = announcement_drafts.get(user.id)
+    if not draft or draft[0] != token or action not in {"send", "cancel"}:
+        await callback.answer("Объявление устарело", show_alert=True)
+        return
+    # Remove before the first await so a double click cannot send twice.
+    announcement_drafts.pop(user.id)
+    await callback.answer("Рассылка отменена" if action == "cancel" else "Начинаю рассылку")
+    if action == "cancel":
+        await callback.message.answer("Рассылка отменена.")
+        return
+    _, text, recipients = draft
+    sent = failed = network_errors = 0
+    for user_id in recipients:
+        delivered, network_error = await deliver_announcement(user_id, text)
+        sent += delivered
+        failed += not delivered
+        network_errors = network_errors + 1 if network_error else 0
+        if network_errors >= 3:
+            break
+        await asyncio.sleep(0.1)
+    remaining = len(recipients) - sent - failed
+    await callback.message.answer(
+        f"Рассылка завершена. Отправлено: {sent}. Не доставлено: {failed}."
+        + (f" Не обработано из-за соединения: {remaining}." if remaining else "")
+    )
+
+
+async def deliver_announcement(user_id: int, text: str) -> tuple[bool, bool]:
+    for attempt in range(2):
+        try:
+            await asyncio.wait_for(bot.send_message(user_id, text), timeout=20)
+            return True, False
+        except TelegramRetryAfter as exc:
+            if attempt == 0:
+                await asyncio.sleep(exc.retry_after)
+                continue
+            logger.warning("Telegram rate limit persisted for announcement recipient %s", user_id)
+            return False, False
+        except TelegramAPIError as exc:
+            logger.warning("Announcement not delivered to %s: %s", user_id, exc)
+            return False, False
+        except Exception:
+            logger.exception("Announcement connection error for %s", user_id)
+            return False, True
+    return False, False
 
 
 @dp.message(Command("support"))

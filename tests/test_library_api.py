@@ -181,7 +181,7 @@ def test_material_edit_delete_and_server_rate_limit(project):
     category_id, material_id = create_material(client)
     assert client.patch(f"/api/admin/materials/{material_id}", headers=auth(1), json={"category_id": category_id, "title": "Обновлено", "text": "Новый текст"}).status_code == 200
     assert client.get(f"/api/materials/{material_id}", headers=auth(2)).json()["text"] == "Новый текст"
-    for _ in range(60):
+    for _ in range(150):
         assert client.get("/api/images/999", headers=auth(2)).status_code == 404
     limited = client.get("/api/images/999", headers=auth(2))
     assert limited.status_code == 429 and limited.headers["retry-after"] == "60"

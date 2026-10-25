@@ -74,6 +74,53 @@ def test_page_tickets_are_scoped_short_lived_and_single_use(project):
                         json={"view": view, "kind": "image", "resource_id": second_image, "page": 1}).status_code == 404
 
 
+def test_abandoned_tickets_do_not_block_new_pages(project):
+    admin, db, settings = project
+    _, material_id = create_material(admin)
+    image_id = admin.post(f"/api/admin/materials/{material_id}/images", headers=auth(1), content=photo_bytes()).json()["id"]
+
+    with TestClient(create_app(settings, db)) as raw:
+        device = Device(); assert open_session(raw, device, 2)[0].status_code == 200
+        material_path = f"/api/materials/{material_id}"
+        view = raw.get(material_path, headers=device.headers("GET", material_path)).json()["view_token"]
+        tickets = []
+        for _ in range(9):
+            response = raw.post("/api/reader/ticket", headers=device.headers("POST", "/api/reader/ticket"),
+                                json={"view": view, "kind": "image", "resource_id": image_id, "page": 1})
+            assert response.status_code == 200
+            tickets.append(response.json()["ticket"])
+        path = f"/api/images/{image_id}"
+        def image(ticket):
+            return raw.get(path, headers={**device.headers("GET", path),
+                                          "X-Read-View": view, "X-Page-Ticket": ticket})
+        assert image(tickets[0]).status_code == 403  # the oldest unused ticket was evicted
+        assert image(tickets[-1]).status_code == 200
+        with sqlite3.connect(db.path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM reader_tickets").fetchone()[0] == 7
+
+
+def test_cancelled_page_request_does_not_use_reading_allowance(project):
+    admin, db, settings = project
+    _, material_id = create_material(admin)
+    image_ids = [admin.post(f"/api/admin/materials/{material_id}/images", headers=auth(1),
+                            content=photo_bytes()).json()["id"] for _ in range(2)]
+    limited = replace(settings, read_pages_per_minute=2, read_pages_per_hour=20, read_pages_per_day=50)
+
+    with TestClient(create_app(limited, db)) as raw:
+        device = Device(); assert open_session(raw, device, 2)[0].status_code == 200
+        material_path = f"/api/materials/{material_id}"
+        view = raw.get(material_path, headers=device.headers("GET", material_path)).json()["view_token"]
+        for image_id in image_ids:
+            response = raw.post("/api/reader/ticket", headers=device.headers("POST", "/api/reader/ticket"),
+                                json={"view": view, "kind": "image", "resource_id": image_id, "page": 1})
+            assert response.status_code == 200
+            ticket = response.json()["ticket"]
+        path = f"/api/images/{image_ids[-1]}"
+        response = raw.get(path, headers={**device.headers("GET", path),
+                                          "X-Read-View": view, "X-Page-Ticket": ticket})
+        assert response.status_code == 200
+
+
 def test_distinct_page_limits_persist_across_app_restart(project):
     admin, db, settings = project
     _, material_id = create_material(admin)

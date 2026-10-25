@@ -108,7 +108,7 @@ class AccessControl:
             await self._proof(db, proof, now)
             await db.execute("DELETE FROM reader_requests WHERE at<=?", (now - 60,))
             count = await (await db.execute("SELECT COUNT(*) FROM reader_requests WHERE user_id=?", (row[0],))).fetchone()
-            if count[0] >= 240:
+            if count[0] >= 300:
                 await db.commit()
                 raise HTTPException(429, "Слишком много действий. Подождите минуту.", headers={"Retry-After": "60"})
             await db.execute("INSERT INTO reader_requests VALUES (?, ?)", (row[0], now))
@@ -211,13 +211,16 @@ class AccessControl:
             if not valid:
                 raise HTTPException(404, "Страница не найдена в открытом материале.")
             resource = f"{kind}:{resource_id}:{page}"
-            # Count at issuance as well as consumption: pre-minting many tickets
-            # cannot reserve the whole course before a limit is checked.
-            await self._allow(db, session, resource, now)
             await db.execute("DELETE FROM reader_tickets WHERE expires<=?", (now,))
             pending = await (await db.execute("SELECT COUNT(*) FROM reader_tickets WHERE session_hash=?", (session.token_hash,))).fetchone()
             if pending[0] >= 8:
-                raise HTTPException(429, "Дождитесь загрузки текущих страниц.", headers={"Retry-After": "30"})
+                # Fast scrolling can cancel the image request after its ticket
+                # was issued. Discard the oldest unused ticket instead of
+                # blocking the reader until it expires.
+                await db.execute("""DELETE FROM reader_tickets WHERE ticket_hash IN (
+                    SELECT ticket_hash FROM reader_tickets WHERE session_hash=?
+                    ORDER BY expires LIMIT ?
+                )""", (session.token_hash, pending[0] - 7))
             await db.execute("INSERT INTO reader_tickets VALUES (?, ?, ?, ?, ?)", (digest(ticket), session.token_hash, digest(view), resource, now + 30))
             await db.commit()
         return ticket

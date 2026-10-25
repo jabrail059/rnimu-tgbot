@@ -239,7 +239,7 @@ def create_app(settings: Settings, database: Database, bot=None) -> FastAPI:
         image_requests.move_to_end(user_id)
         while history and history[0] <= now - 60:
             history.popleft()
-        if len(history) >= 60:
+        if len(history) >= 150:
             raise HTTPException(429, "Слишком много запросов страниц. Подождите минуту.", headers={"Retry-After": "60"})
         history.append(now)
         if len(image_requests) > 10_000:

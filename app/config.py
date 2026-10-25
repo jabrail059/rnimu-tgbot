@@ -30,9 +30,9 @@ class Settings:
     max_image_bytes: int = 50 * 1024 * 1024
     max_pdf_bytes: int = 512 * 1024 * 1024
     subscription_reminder_hour: int = 10
-    read_pages_per_minute: int = 40
-    read_pages_per_hour: int = 180
-    read_pages_per_day: int = 600
+    read_pages_per_minute: int = 120
+    read_pages_per_hour: int = 720
+    read_pages_per_day: int = 2400
 
     @property
     def payment_return_url(self) -> str:
@@ -77,7 +77,7 @@ def get_settings() -> Settings:
     except ValueError as exc:
         raise RuntimeError("SUBSCRIPTION_REMINDER_HOUR must be an hour from 0 to 23 (Moscow time)") from exc
     read_limits = {}
-    for key, default in (("READ_PAGES_PER_MINUTE", 40), ("READ_PAGES_PER_HOUR", 180), ("READ_PAGES_PER_DAY", 600)):
+    for key, default in (("READ_PAGES_PER_MINUTE", 120), ("READ_PAGES_PER_HOUR", 720), ("READ_PAGES_PER_DAY", 2400)):
         try:
             value = int(os.getenv(key, str(default)))
             if value < 1:

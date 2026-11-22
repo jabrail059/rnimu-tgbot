@@ -115,6 +115,17 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         command("POST", "/window/rect", {"width": 390, "height": 844})
         command("POST", "/url", {"url": f"http://127.0.0.1:{app_port}/test-shell"})
         wait_for("!document.getElementById('catalog').hidden"); idle()
+        assert js("return document.getElementById('back-to-top').hidden")
+        initial_theme = js("return document.getElementById('theme-toggle').dataset.activeTheme")
+        next_theme = "light" if initial_theme == "dark" else "dark"
+        click("theme-toggle")
+        assert js("return document.documentElement.dataset.theme") == next_theme
+        assert js("return document.getElementById('theme-toggle').getAttribute('aria-checked')") == str(next_theme == "dark").lower()
+        command("POST", "/refresh", {})
+        wait_for("!document.getElementById('catalog').hidden"); idle()
+        assert js("return document.getElementById('theme-toggle').dataset.activeTheme") == next_theme
+        click("theme-toggle")
+        assert js("return document.documentElement.dataset.theme") == initial_theme
         click("admin-toggle"); idle(); click("add-category"); idle()
         fill("category-name", "Воспаление")
         js("document.getElementById('category-form').requestSubmit()")
@@ -155,9 +166,13 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         js("window.firstPhotoFetches=0;window.firstPageFetches=0;window.photoFetched=[];const trackedPhoto=arguments[0];const originalFetch=window.fetch;window.fetch=(...args)=>{const path=String(args[0]);if(path===trackedPhoto)window.firstPhotoFetches++;if(/^\\/api\\/images\\/\\d+$/.test(path))window.photoFetched.push(path);if(/\\/api\\/documents\\/\\d+\\/pages\\/1$/.test(path))window.firstPageFetches++;return originalFetch(...args)}", f"/api/images/{first_image_id}")
         click("preview-material")
         wait_for("(document.querySelector('.photo-page canvas')?.width || 0) > 1"); idle()
+        assert js("return getComputedStyle(document.getElementById('subscription')).display") == "none"
+        assert js("return document.querySelector('#reader-zoom label').textContent") == "Размер фото и PDF"
         assert js("return document.querySelector('.photo-page canvas').width") == 800
         assert js("return document.querySelectorAll('.photo-page').length") == 300
         assert js("return document.querySelector('.photo-jump input').max") == "300"
+        assert js("return document.querySelectorAll('#article-nav .section-link').length") == 2
+        assert "PDF" in js("return document.querySelectorAll('#article-nav .section-link')[1].textContent")
         photo_fetches_before_jump = js("return window.photoFetched.length")
         target_photo = js("return document.querySelectorAll('.photo-page')[299].photoPage.imageId")
         js("const form=document.querySelector('.photo-jump');form.querySelector('input').value='300';form.requestSubmit()")
@@ -166,11 +181,11 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         assert js("return window.photoFetched.length < 15")
         js("document.querySelectorAll('.photo-page')[0].scrollIntoView()")
         wait_for("document.querySelectorAll('.photo-page canvas')[0].width > 1")
-        assert js("return document.querySelectorAll('[data-photo-scale]').length") == 3
-        js("document.querySelector('[data-photo-scale=\"1.65\"]').click()")
-        assert js("return document.getElementById('photo-pages').dataset.scale") == "1.65"
-        assert js("return document.querySelector('[data-photo-scale=\"1.65\"]').getAttribute('aria-pressed')") == "true"
-        js("document.querySelector('[data-photo-scale=\"1\"]').click()")
+        js("const slider=document.getElementById('material-scale');slider.value='165';slider.dispatchEvent(new Event('input',{bubbles:true}))")
+        assert js("return document.getElementById('article').style.getPropertyValue('--material-width')") == "165%"
+        assert js("return localStorage.getItem('rnimu-material-scale')") == "165"
+        click("scale-reset")
+        assert js("return document.getElementById('material-scale-value').textContent") == "100%"
         assert not js("return Boolean(window.stolen)")
         assert js("return document.getElementById('photo-stage') === null")
         js("window.dispatchEvent(new Event('blur'))")
@@ -180,14 +195,31 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         click("resume"); wait_for("document.getElementById('privacy-shield').hidden")
         wait_for("(document.querySelector('.photo-page canvas')?.width || 0) > 1")
         assert js("return document.documentElement.scrollWidth <= window.innerWidth")
+        js("document.querySelectorAll('#article-nav .section-link')[1].click()")
+        wait_for("document.querySelector('.pdf-page canvas').width > 1")
+        assert js("return document.querySelector('.pdf-document').getBoundingClientRect().top < 60")
+        assert js("return !document.getElementById('back-to-top').hidden")
+        js("window.scrollBy(0,-80)")
+        wait_for("document.getElementById('back-to-top').hidden")
+        js("window.scrollBy(0,80)")
+        wait_for("!document.getElementById('back-to-top').hidden")
+        click("back-to-top")
+        wait_for("window.scrollY === 0")
+        assert js("return document.getElementById('back-to-top').hidden")
         Path("/tmp/rnimu-miniapp-reader.png").write_bytes(base64.b64decode(command("GET", "/screenshot")))
         click("fullscreen")
         assert js("return window.Telegram.WebApp.isFullscreen && document.getElementById('fullscreen').textContent === 'Свернуть экран'")
+        assert js("return document.getElementById('fullscreen').getAttribute('aria-label')") == "Свернуть экран"
         click("fullscreen")
         assert not js("return window.Telegram.WebApp.isFullscreen")
+        wait_for("Array.from(document.querySelectorAll('.pdf-page')).every(node => !node.pdfPage.request)")
         js("window.pdfFetched=[];const trackedFetch=window.fetch;window.fetch=(...args)=>{const path=String(args[0]);if(/\\/api\\/documents\\/\\d+\\/pages\\/\\d+$/.test(path))window.pdfFetched.push(path);return trackedFetch(...args)}")
         js("const form=document.querySelector('.pdf-jump');form.querySelector('input').value='300';form.requestSubmit()")
         wait_for("document.querySelectorAll('.pdf-page canvas')[299].width > 1")
+        js("const slider=document.getElementById('material-scale');slider.value='150';slider.dispatchEvent(new Event('input',{bubbles:true}))")
+        assert js("const page=document.querySelector('.pdf-page');return page.querySelector('.pdf-sheet').getBoundingClientRect().width/page.getBoundingClientRect().width") > 1.45
+        assert js("return document.getElementById('article').style.getPropertyValue('--material-width')") == "150%"
+        click("scale-reset")
         assert js("return window.pdfFetched[0].endsWith('/pages/300')")
         assert js("return document.querySelector('.pdf-jump input').max") == "320"
         assert not js("return window.pdfFetched.some(path => /\\/pages\\/[3-5]$/.test(path))")

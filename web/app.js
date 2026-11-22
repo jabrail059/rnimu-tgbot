@@ -12,7 +12,6 @@ let photoPages = [];
 let photoActive = 0;
 let photoPriority = null;
 let photoCacheBytes = 0;
-let photoScale = 1;
 const PHOTO_CACHE_LIMIT = 64 * 1024 * 1024;
 let expirationTimer = null;
 let privacyVersion = 0;
@@ -21,14 +20,70 @@ let pdfObserver = null;
 let pdfPages = [];
 let pdfActive = 0;
 let pdfPriority = null;
-let pdfScale = 1;
 let readerScroll = 0;
 let heartbeatTimer = null;
 let pdfUploadRunning = false;
 let pdfCacheBytes = 0;
 const PDF_CACHE_LIMIT = 96 * 1024 * 1024;
+const THEME_KEY = "rnimu-theme";
+const SIZE_KEY = "rnimu-material-scale";
+let previousScrollY = window.scrollY;
+let scrollButtonVisible = false;
+
+function savedPreference(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function savePreference(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* Private browsing may disable storage. */ }
+}
+
+function setTheme(value) {
+  const theme = ["light", "dark"].includes(value) ? value : "auto";
+  const root = document.documentElement;
+  if (theme === "auto") root.removeAttribute("data-theme");
+  else root.dataset.theme = theme;
+  const current = theme === "auto"
+    ? (tg?.colorScheme || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"))
+    : theme;
+  root.style.colorScheme = current;
+  const toggle = byId("theme-toggle");
+  toggle.dataset.activeTheme = current;
+  toggle.setAttribute("aria-checked", String(current === "dark"));
+  const label = current === "dark" ? "Включить светлую тему" : "Включить тёмную тему";
+  toggle.setAttribute("aria-label", label);
+  toggle.title = label;
+  savePreference(THEME_KEY, theme);
+}
+
+function setMaterialScale(value) {
+  const scale = Math.max(75, Math.min(200, Math.round(Number(value) / 5) * 5 || 100));
+  byId("article").style.setProperty("--material-width", `${scale}%`);
+  byId("material-scale").value = String(scale);
+  byId("material-scale-value").textContent = `${scale}%`;
+  byId("scale-down").disabled = scale <= 75;
+  byId("scale-up").disabled = scale >= 200;
+  byId("scale-reset").disabled = scale === 100;
+  savePreference(SIZE_KEY, String(scale));
+}
+
+function updateBackToTop() {
+  const currentY = window.scrollY;
+  if (currentY <= 240 || currentY < previousScrollY) scrollButtonVisible = false;
+  else if (currentY > previousScrollY) scrollButtonVisible = true;
+  previousScrollY = currentY;
+  visible("back-to-top", scrollButtonVisible && !state.locked && !document.hidden);
+}
 
 if (tg) { tg.ready(); tg.expand(); }
+setTheme(savedPreference(THEME_KEY));
+setMaterialScale(savedPreference(SIZE_KEY) || 100);
+tg?.onEvent?.("themeChanged", () => {
+  if (savedPreference(THEME_KEY) === "auto") setTheme("auto");
+});
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => {
+  if (savedPreference(THEME_KEY) === "auto" && !tg?.colorScheme) setTheme("auto");
+});
 
 async function api(path, {method = "GET", data, file, signal, binary = false, extraHeaders = {}, keepalive = false} = {}) {
   const headers = {...await window.courseAuth.headers(path, method), ...extraHeaders};
@@ -58,7 +113,7 @@ function clearPhotos() {
     page.canvas.width = 1; page.canvas.height = 1;
   }
   photoPages = []; photoCacheBytes = 0; photoPriority = null;
-  byId("gallery").querySelectorAll(".photo-controls, .photo-jump").forEach(control => control.remove());
+  byId("gallery").querySelectorAll(".photo-jump").forEach(control => control.remove());
   byId("photo-pages").replaceChildren(); visible("gallery", false);
 }
 
@@ -71,6 +126,7 @@ function clearReader() {
   }
   clearPhotos();
   clearDocuments();
+  byId("article-nav").replaceChildren(); visible("reader-tools", false);
   byId("article-title").textContent = "";
   byId("article-content").textContent = "";
 }
@@ -98,6 +154,7 @@ function view(id) {
   visible("back", canGoBack);
   if (tg?.BackButton) canGoBack ? tg.BackButton.show() : tg.BackButton.hide();
   window.scrollTo(0, 0);
+  updateBackToTop();
 }
 
 function notice(message) { byId("notice").textContent = message; visible("notice"); }
@@ -226,6 +283,7 @@ async function openArticle(id) {
   byId("article-content").textContent = data.text || "";
   renderPhotos(data.images);
   renderDocuments(data.documents);
+  renderArticleNav(data);
 }
 
 function discardCachedPhoto(page) {
@@ -243,14 +301,6 @@ function cachePhoto(page, blob) {
     if (!oldest) break;
     discardCachedPhoto(oldest);
   }
-}
-
-function setPhotoScale(scale) {
-  photoScale = scale;
-  byId("photo-pages").dataset.scale = String(scale);
-  byId("gallery").querySelectorAll("[data-photo-scale]").forEach(button => {
-    button.setAttribute("aria-pressed", String(Number(button.dataset.photoScale) === scale));
-  });
 }
 
 function pageJump(kind, title, count, targetAt, prioritize) {
@@ -271,11 +321,48 @@ function pageJump(kind, title, count, targetAt, prioritize) {
     const target = targetAt(pageNumber.valueAsNumber - 1);
     if (target) {
       pageNumber.blur();
-      target.scrollIntoView({block: "start", behavior: "auto"});
       prioritize(target);
+      target.scrollIntoView({block: "start", behavior: "auto"});
     }
   };
   return jump;
+}
+
+function renderArticleNav(material) {
+  const nav = byId("article-nav"); nav.replaceChildren();
+  const hasMedia = material.images.length || material.documents.length;
+  visible("reader-tools", Boolean(hasMedia)); visible("reader-zoom", Boolean(hasMedia));
+  if (!hasMedia) return;
+  byId("reader-zoom").querySelector("label").textContent = material.images.length && material.documents.length
+    ? "Размер фото и PDF" : material.images.length ? "Размер фото" : "Размер PDF";
+  const heading = document.createElement("span");
+  heading.className = "article-nav-label"; heading.textContent = "Быстрый переход";
+  nav.append(heading);
+  const addJump = (label, target, prioritize) => {
+    const button = document.createElement("button");
+    button.type = "button"; button.className = "section-link"; button.textContent = label;
+    button.title = label;
+    button.onclick = () => {
+      button.blur(); prioritize(); target.scrollIntoView({block: "start", behavior: "auto"});
+    };
+    nav.append(button);
+  };
+  if (material.images.length) addJump(`Фотографии · ${material.images.length}`, byId("gallery"), () => {
+    photoPriority = photoPages[0];
+    pdfPages.forEach(page => page.request?.abort());
+    photoPriority.nearby = true; pumpPhotos();
+  });
+  material.documents.forEach(item => {
+    const section = Array.from(byId("documents").querySelectorAll(".pdf-document"))
+      .find(element => element.dataset.documentId === String(item.id));
+    if (!section) return;
+    addJump(`PDF · ${item.title}`, section, () => {
+      pdfPriority = pdfPages.find(page => page.documentId === item.id);
+      photoPages.forEach(page => page.request?.abort());
+      pdfPages.forEach(page => { if (page !== pdfPriority) page.request?.abort(); });
+      if (pdfPriority) { pdfPriority.nearby = true; pumpPDF(); }
+    });
+  });
 }
 
 function renderPhotos(photos) {
@@ -283,17 +370,6 @@ function renderPhotos(photos) {
   if (!photos.length || state.locked) return;
   const gallery = byId("gallery"); visible("gallery");
   const container = byId("photo-pages");
-  container.dataset.scale = String(photoScale);
-  const controls = document.createElement("div"); controls.className = "photo-controls";
-  const label = document.createElement("span"); label.textContent = "Размер фото";
-  controls.append(label);
-  for (const [scale, title] of [[1, "Маленький"], [1.3, "Средний"], [1.65, "Большой"]]) {
-    const button = document.createElement("button"); button.type = "button";
-    button.className = "secondary photo-scale"; button.textContent = title;
-    button.dataset.photoScale = String(scale); button.setAttribute("aria-pressed", String(scale === photoScale));
-    button.onclick = () => setPhotoScale(scale); controls.append(button);
-  }
-  gallery.insertBefore(controls, container);
   gallery.insertBefore(pageJump("photo", byId("article-title").textContent, photos.length,
     index => container.children[index], target => {
       photoPriority = target.photoPage;
@@ -420,29 +496,10 @@ function cachePDFPage(page, blob) {
   }
 }
 
-function setPdfScale(scale) {
-  pdfScale = scale;
-  const pages = byId("documents").querySelectorAll(".pdf-pages");
-  pages.forEach(item => item.dataset.scale = String(scale));
-  byId("documents").querySelectorAll("[data-pdf-scale]").forEach(button => {
-    button.setAttribute("aria-pressed", String(Number(button.dataset.pdfScale) === scale));
-  });
-}
-
 function renderDocuments(documents) {
   clearDocuments();
   if (!documents.length || state.locked) return;
   const container = byId("documents"); visible("documents");
-  const controls = window.document.createElement("div"); controls.className = "pdf-controls";
-  const label = window.document.createElement("span"); label.textContent = "Размер текста";
-  controls.append(label);
-  for (const [scale, title] of [[1, "Маленький"], [1.3, "Средний"], [1.65, "Большой"]]) {
-    const button = window.document.createElement("button"); button.type = "button";
-    button.className = "secondary pdf-scale"; button.textContent = title;
-    button.dataset.pdfScale = String(scale); button.setAttribute("aria-pressed", String(scale === pdfScale));
-    button.onclick = () => setPdfScale(scale); controls.append(button);
-  }
-  container.append(controls);
   // Only nearby pages keep expensive decoded pixels. Compressed pages stay in
   // bounded, memory-only cache so scrolling back does not contact the server.
   pdfObserver = new IntersectionObserver(entries => {
@@ -459,11 +516,11 @@ function renderDocuments(documents) {
   }, {rootMargin: "300px 0px"});
   for (const document of documents) {
     const section = window.document.createElement("section"); section.className = "pdf-document";
+    section.dataset.documentId = String(document.id);
     const heading = window.document.createElement("h3"); heading.textContent = document.title;
     const hint = window.document.createElement("p"); hint.className = "muted";
     hint.textContent = `${document.page_sizes.length} стр. · Листайте вниз для чтения`;
     const pages = window.document.createElement("div"); pages.className = "pdf-pages";
-    pages.dataset.scale = String(pdfScale);
     const jump = pageJump("pdf", document.title, document.page_sizes.length,
       index => pages.children[index], target => {
         pdfPriority = target.pdfPage;
@@ -623,6 +680,14 @@ async function goBack() {
 }
 
 byId("back").onclick = () => run(goBack);
+byId("theme-toggle").onclick = () =>
+  setTheme(byId("theme-toggle").dataset.activeTheme === "dark" ? "light" : "dark");
+byId("material-scale").oninput = event => setMaterialScale(event.target.value);
+byId("scale-down").onclick = () => setMaterialScale(Number(byId("material-scale").value) - 10);
+byId("scale-up").onclick = () => setMaterialScale(Number(byId("material-scale").value) + 10);
+byId("scale-reset").onclick = () => setMaterialScale(100);
+byId("back-to-top").onclick = () => window.scrollTo({top: 0, behavior: "auto"});
+window.addEventListener("scroll", updateBackToTop, {passive: true});
 byId("fullscreen").onclick = () => {
   try { tg.isFullscreen ? tg.exitFullscreen() : tg.requestFullscreen(); }
   catch { notice("Полноэкранный режим недоступен в этой версии Telegram."); }
@@ -767,6 +832,7 @@ function lockContent() {
   if (!state.locked) readerScroll = window.scrollY;
   privacyVersion += 1;
   state.locked = true; document.body.classList.add("privacy-hidden"); visible("privacy-shield"); clearReader();
+  updateBackToTop();
 }
 async function resumeContent() {
   if (!state.locked || document.hidden || tg?.isActive === false || state.busy) return;
@@ -782,6 +848,7 @@ async function resumeContent() {
     }
     if (state.locked || version !== privacyVersion || document.hidden || tg?.isActive === false) return;
     document.body.classList.remove("privacy-hidden"); visible("privacy-shield", false);
+    updateBackToTop();
   } catch (error) {
     if (error.status === 401 || error.status === 403) {
       showError(error); state.locked = false; document.body.classList.remove("privacy-hidden"); visible("privacy-shield", false);
@@ -799,7 +866,12 @@ window.addEventListener("pageshow", resumeContent);
 document.addEventListener("visibilitychange", () => document.hidden ? lockContent() : resumeContent());
 if (tg?.isVersionAtLeast?.("8.0")) {
   tg.onEvent("deactivated", lockContent); tg.onEvent("activated", resumeContent);
-  tg.onEvent("fullscreenChanged", () => { byId("fullscreen").textContent = tg.isFullscreen ? "Свернуть экран" : "На весь экран"; });
+  tg.onEvent("fullscreenChanged", () => {
+    const label = tg.isFullscreen ? "Свернуть экран" : "На весь экран";
+    byId("fullscreen").textContent = label;
+    byId("fullscreen").setAttribute("aria-label", label);
+    byId("fullscreen").title = label;
+  });
   tg.onEvent("fullscreenFailed", () => notice("Полноэкранный режим недоступен на этом устройстве."));
 }
 byId("resume").onclick = resumeContent;

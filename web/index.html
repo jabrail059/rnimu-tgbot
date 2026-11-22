@@ -11,11 +11,17 @@
 </head>
 <body>
   <main class="app" id="app">
-    <header>
+    <header class="topbar">
       <button id="back" class="secondary icon" hidden aria-label="Назад">←</button>
-      <div><p class="eyebrow">КУРС · @eucliris</p><h1>Патанатомия</h1></div>
-      <button id="admin-toggle" class="secondary" hidden>Управление</button>
-      <button id="fullscreen" class="secondary" hidden>На весь экран</button>
+      <span class="brand-mark" aria-hidden="true">✦</span>
+      <div class="brand-copy"><p class="eyebrow">КУРС · @eucliris</p><h1>Патанатомия</h1></div>
+      <div class="header-actions">
+        <button id="theme-toggle" class="theme-toggle" type="button" role="switch" aria-checked="false" aria-label="Включить тёмную тему" title="Включить тёмную тему">
+          <span class="theme-icon" aria-hidden="true">☀</span><span class="theme-icon" aria-hidden="true"><svg class="moon-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><mask id="moon-cutout"><rect width="24" height="24" fill="white"/><circle cx="16" cy="7" r="8" fill="black"/></mask><circle cx="12" cy="12" r="9" fill="currentColor" mask="url(#moon-cutout)"/></svg></span>
+        </button>
+        <button id="admin-toggle" class="secondary" hidden>Управление</button>
+        <button id="fullscreen" class="secondary" aria-label="На весь экран" title="На весь экран" hidden>На весь экран</button>
+      </div>
     </header>
     <p id="subscription" class="status" hidden></p>
     <p id="loading" role="status">Проверяем доступ…</p>
@@ -53,7 +59,20 @@
       <div id="material-list" class="card-list"></div>
     </section>
     <article id="article" class="protected" hidden>
-      <p class="eyebrow">УЧЕБНЫЙ МАТЕРИАЛ</p><h2 id="article-title"></h2>
+      <div class="article-intro"><p class="eyebrow">УЧЕБНЫЙ МАТЕРИАЛ</p><h2 id="article-title"></h2></div>
+      <div id="reader-tools" class="reader-tools" hidden>
+        <nav id="article-nav" class="article-nav" aria-label="Быстрый переход по материалу"></nav>
+        <div id="reader-zoom" class="reader-zoom" hidden>
+          <label for="material-scale">Размер фото и PDF</label>
+          <div class="zoom-controls">
+            <button id="scale-down" type="button" class="secondary zoom-step" aria-label="Уменьшить размер">−</button>
+            <input id="material-scale" type="range" min="75" max="200" step="5" value="100" aria-label="Размер фото и PDF">
+            <button id="scale-up" type="button" class="secondary zoom-step" aria-label="Увеличить размер">+</button>
+            <output id="material-scale-value" for="material-scale">100%</output>
+            <button id="scale-reset" type="button" class="secondary zoom-reset">По ширине</button>
+          </div>
+        </div>
+      </div>
       <div id="article-content"></div>
       <section id="gallery" aria-label="Фотографии материала" hidden>
         <h3>Фотографии</h3>
@@ -94,6 +113,7 @@
     </section>
     <footer>Автор курса <a href="https://t.me/eucliris" target="_blank" rel="noopener noreferrer">@eucliris</a></footer>
   </main>
+  <button id="back-to-top" class="back-to-top" type="button" aria-label="Наверх" title="Наверх" hidden><span aria-hidden="true">↑</span></button>
   <div id="privacy-shield" hidden role="status"><div><h2>Материал скрыт</h2><p>Вернитесь в приложение, чтобы продолжить чтение.</p><button id="resume">Продолжить</button></div></div>
 </body>
 </html>

@@ -12,7 +12,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonWebApp, Message, WebAppInfo
+from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, MenuButtonWebApp, Message, ReplyKeyboardMarkup, WebAppInfo
 from yoomoney import Quickpay
 
 from app.config import get_settings
@@ -53,12 +53,30 @@ def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def quick_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Главное меню"), KeyboardButton(text="Поддержка")],
+            [KeyboardButton(text="Мой ID")],
+        ],
+        resize_keyboard=True,
+    )
+
+
 @dp.message(CommandStart())
 @dp.message(Command("menu"))
 async def start(message: Message) -> None:
     if not message.from_user:
         return
     await send_menu(message, message.from_user)
+    if message.chat.type == "private":
+        await message.answer("Быстрые действия — на клавиатуре бота.", reply_markup=quick_keyboard())
+
+
+@dp.message(F.text == "Главное меню")
+async def quick_menu(message: Message) -> None:
+    if message.from_user:
+        await send_menu(message, message.from_user)
 
 
 async def send_menu(message: Message, user) -> None:
@@ -82,6 +100,7 @@ async def send_menu(message: Message, user) -> None:
 
 
 @dp.message(Command("id"))
+@dp.message(F.text == "Мой ID")
 async def show_user_id(message: Message) -> None:
     if message.from_user and message.chat.type == "private":
         await message.answer(f"Ваш Telegram ID: {message.from_user.id}")
@@ -164,6 +183,7 @@ async def deliver_announcement(user_id: int, text: str) -> tuple[bool, bool]:
 
 
 @dp.message(Command("support"))
+@dp.message(F.text == "Поддержка")
 async def support_command(message: Message) -> None:
     if message.chat.type == "private":
         await send_support(message)

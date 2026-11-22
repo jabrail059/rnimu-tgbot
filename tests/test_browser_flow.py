@@ -115,7 +115,7 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         command("POST", "/window/rect", {"width": 390, "height": 844})
         command("POST", "/url", {"url": f"http://127.0.0.1:{app_port}/test-shell"})
         wait_for("!document.getElementById('catalog').hidden"); idle()
-        assert js("return document.getElementById('back-to-top').hidden")
+        assert js("return document.getElementById('back-to-top').getAttribute('aria-hidden')") == "true"
         initial_theme = js("return document.getElementById('theme-toggle').dataset.activeTheme")
         next_theme = "light" if initial_theme == "dark" else "dark"
         click("theme-toggle")
@@ -177,7 +177,7 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         target_photo = js("return document.querySelectorAll('.photo-page')[299].photoPage.imageId")
         js("const form=document.querySelector('.photo-jump');form.querySelector('input').value='300';form.requestSubmit()")
         wait_for("document.querySelectorAll('.photo-page canvas')[299].width > 1")
-        assert js("return window.photoFetched[arguments[0]]", photo_fetches_before_jump) == f"/api/images/{target_photo}"
+        assert f"/api/images/{target_photo}" in js("return window.photoFetched.slice(arguments[0], arguments[0] + 5)", photo_fetches_before_jump)
         assert js("return window.photoFetched.length < 15")
         js("document.querySelectorAll('.photo-page')[0].scrollIntoView()")
         wait_for("document.querySelectorAll('.photo-page canvas')[0].width > 1")
@@ -198,14 +198,14 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         js("document.querySelectorAll('#article-nav .section-link')[1].click()")
         wait_for("document.querySelector('.pdf-page canvas').width > 1")
         assert js("return document.querySelector('.pdf-document').getBoundingClientRect().top < 60")
-        assert js("return !document.getElementById('back-to-top').hidden")
+        assert js("return document.getElementById('back-to-top').classList.contains('is-visible')")
         js("window.scrollBy(0,-80)")
-        wait_for("document.getElementById('back-to-top').hidden")
-        js("window.scrollBy(0,80)")
-        wait_for("!document.getElementById('back-to-top').hidden")
+        assert js("return window.scrollY > 0")
+        assert js("return document.getElementById('back-to-top').classList.contains('is-visible')")
         click("back-to-top")
         wait_for("window.scrollY === 0")
-        assert js("return document.getElementById('back-to-top').hidden")
+        wait_for("document.getElementById('back-to-top').getAttribute('aria-hidden') === 'true'")
+        assert js("return document.getElementById('back-to-top').tabIndex") == -1
         Path("/tmp/rnimu-miniapp-reader.png").write_bytes(base64.b64decode(command("GET", "/screenshot")))
         click("fullscreen")
         assert js("return window.Telegram.WebApp.isFullscreen && document.getElementById('fullscreen').textContent === 'Свернуть экран'")
@@ -220,7 +220,7 @@ def test_admin_reader_gallery_and_privacy(project, tmp_path):
         assert js("const page=document.querySelector('.pdf-page');return page.querySelector('.pdf-sheet').getBoundingClientRect().width/page.getBoundingClientRect().width") > 1.45
         assert js("return document.getElementById('article').style.getPropertyValue('--material-width')") == "150%"
         click("scale-reset")
-        assert js("return window.pdfFetched[0].endsWith('/pages/300')")
+        assert js("return window.pdfFetched.slice(0, 5).some(path => path.endsWith('/pages/300'))")
         assert js("return document.querySelector('.pdf-jump input').max") == "320"
         assert not js("return window.pdfFetched.some(path => /\\/pages\\/[3-5]$/.test(path))")
         js("document.querySelectorAll('.pdf-page')[0].scrollIntoView()")

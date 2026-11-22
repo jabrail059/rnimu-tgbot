@@ -27,8 +27,7 @@ let pdfCacheBytes = 0;
 const PDF_CACHE_LIMIT = 96 * 1024 * 1024;
 const THEME_KEY = "rnimu-theme";
 const SIZE_KEY = "rnimu-material-scale";
-let previousScrollY = window.scrollY;
-let scrollButtonVisible = false;
+let backToTopIdleTimer = null;
 
 function savedPreference(key) {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -67,12 +66,23 @@ function setMaterialScale(value) {
   savePreference(SIZE_KEY, String(scale));
 }
 
+function setBackToTopVisible(show) {
+  const button = byId("back-to-top");
+  button.classList.toggle("is-visible", show);
+  button.setAttribute("aria-hidden", String(!show));
+  button.tabIndex = show ? 0 : -1;
+  if (!show && document.activeElement === button) button.blur();
+}
+
 function updateBackToTop() {
-  const currentY = window.scrollY;
-  if (currentY <= 240 || currentY < previousScrollY) scrollButtonVisible = false;
-  else if (currentY > previousScrollY) scrollButtonVisible = true;
-  previousScrollY = currentY;
-  visible("back-to-top", scrollButtonVisible && !state.locked && !document.hidden);
+  window.clearTimeout(backToTopIdleTimer);
+  backToTopIdleTimer = null;
+  const show = window.scrollY > 0 && !state.locked && !document.hidden;
+  setBackToTopVisible(show);
+  if (show) backToTopIdleTimer = window.setTimeout(() => {
+    backToTopIdleTimer = null;
+    setBackToTopVisible(false);
+  }, 10_000);
 }
 
 if (tg) { tg.ready(); tg.expand(); }
@@ -199,7 +209,13 @@ function card(title, subtitle, action) {
   const content = document.createElement("span");
   const heading = document.createElement("span"); heading.className = "card-title"; heading.textContent = title;
   const small = document.createElement("small"); small.textContent = subtitle;
-  const arrow = document.createElement("span"); arrow.className = "card-arrow"; arrow.textContent = "→"; arrow.setAttribute("aria-hidden", "true");
+  const arrow = document.createElement("span"); arrow.className = "card-arrow"; arrow.setAttribute("aria-hidden", "true");
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("viewBox", "0 0 24 24"); icon.setAttribute("fill", "none");
+  icon.setAttribute("stroke", "currentColor"); icon.setAttribute("stroke-width", "1.8");
+  icon.setAttribute("stroke-linecap", "round"); icon.setAttribute("stroke-linejoin", "round");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M4 12h16m-6-6 6 6-6 6"); icon.append(path); arrow.append(icon);
   content.append(heading, small); button.append(content, arrow);
   button.onclick = () => run(action); return button;
 }
@@ -686,7 +702,8 @@ byId("material-scale").oninput = event => setMaterialScale(event.target.value);
 byId("scale-down").onclick = () => setMaterialScale(Number(byId("material-scale").value) - 10);
 byId("scale-up").onclick = () => setMaterialScale(Number(byId("material-scale").value) + 10);
 byId("scale-reset").onclick = () => setMaterialScale(100);
-byId("back-to-top").onclick = () => window.scrollTo({top: 0, behavior: "auto"});
+byId("back-to-top").onclick = () => window.scrollTo({top: 0,
+  behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"});
 window.addEventListener("scroll", updateBackToTop, {passive: true});
 byId("fullscreen").onclick = () => {
   try { tg.isFullscreen ? tg.exitFullscreen() : tg.requestFullscreen(); }

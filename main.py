@@ -56,21 +56,21 @@ def main_keyboard() -> InlineKeyboardMarkup:
 def quick_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="Главное меню"), KeyboardButton(text="Поддержка")],
-            [KeyboardButton(text="Мой ID")],
+            [KeyboardButton(text="Главное меню")],
+            [KeyboardButton(text="Поддержка"), KeyboardButton(text="Мой ID")],
         ],
         resize_keyboard=True,
     )
 
 
 @dp.message(CommandStart())
-@dp.message(Command("menu"))
 async def start(message: Message) -> None:
     if not message.from_user:
         return
     await send_menu(message, message.from_user, show_quick_keyboard=True)
 
 
+@dp.message(Command("menu"))
 @dp.message(F.text == "Главное меню")
 async def quick_menu(message: Message) -> None:
     if message.from_user:
@@ -96,11 +96,10 @@ async def send_menu(message: Message, user, *, show_quick_keyboard: bool = False
         f"{status}\n\n"
         f"Доступ ко всем материалам — {settings.subscription_price:.2f} ₽ на {settings.subscription_days} дней."
     )
-    if show_quick_keyboard:
-        await message.answer(intro, reply_markup=main_keyboard())
-        await message.answer(subscription_info, reply_markup=quick_keyboard())
-    else:
-        await message.answer(f"{intro}\n\n{subscription_info}", reply_markup=main_keyboard())
+    await message.answer(
+        f"{intro}\n\n{subscription_info}",
+        reply_markup=quick_keyboard() if show_quick_keyboard else main_keyboard(),
+    )
 
 
 @dp.message(Command("id"))

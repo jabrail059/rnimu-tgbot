@@ -21,16 +21,17 @@ def test_menu_has_subscription_author_and_payment_buttons(project, monkeypatch):
     message = SimpleNamespace(from_user=SimpleNamespace(id=2, username="reader"), chat=SimpleNamespace(type="private"), answer=AsyncMock())
     asyncio.run(module.start(message))
     assert message.answer.await_count == 2
-    menu_call, quick_call = message.answer.call_args_list
-    text = menu_call.args[0]
-    assert "Подписка активна" in text and "Действует до:" in text and "@eucliris" in text
+    menu_call, status_call = message.answer.call_args_list
+    assert "@eucliris" in menu_call.args[0]
+    assert "Подписка активна" in status_call.args[0] and "Действует до:" in status_call.args[0]
+    assert "Быстрые действия" not in status_call.args[0]
     keyboard = menu_call.kwargs["reply_markup"]
     buttons = [button for row in keyboard.inline_keyboard for button in row]
     assert any(button.callback_data == "buy" for button in buttons)
     assert any(button.callback_data == "support" for button in buttons)
     assert all(button.callback_data not in {"menu", "course_info"} for button in buttons)
     assert any(button.web_app for button in buttons)
-    quick_buttons = [button for row in quick_call.kwargs["reply_markup"].keyboard for button in row]
+    quick_buttons = [button for row in status_call.kwargs["reply_markup"].keyboard for button in row]
     assert {button.text for button in quick_buttons} == {"Главное меню", "Поддержка", "Мой ID"}
     asyncio.run(module.show_user_id(message))
     assert "Telegram ID: 2" in message.answer.call_args.args[0]

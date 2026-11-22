@@ -68,9 +68,7 @@ def quick_keyboard() -> ReplyKeyboardMarkup:
 async def start(message: Message) -> None:
     if not message.from_user:
         return
-    await send_menu(message, message.from_user)
-    if message.chat.type == "private":
-        await message.answer("Быстрые действия — на клавиатуре бота.", reply_markup=quick_keyboard())
+    await send_menu(message, message.from_user, show_quick_keyboard=True)
 
 
 @dp.message(F.text == "Главное меню")
@@ -79,7 +77,7 @@ async def quick_menu(message: Message) -> None:
         await send_menu(message, message.from_user)
 
 
-async def send_menu(message: Message, user) -> None:
+async def send_menu(message: Message, user, *, show_quick_keyboard: bool = False) -> None:
     if message.chat.type != "private":
         await message.answer("Откройте личный чат с ботом и отправьте /start.")
         return
@@ -89,14 +87,20 @@ async def send_menu(message: Message, user) -> None:
     if subscription_end:
         end = datetime.fromisoformat(subscription_end).astimezone(ZoneInfo("Europe/Moscow"))
         status = f"Подписка активна\nДействует до: {end:%d.%m.%Y %H:%M} (МСК)"
-    await message.answer(
+    intro = (
         "Патанатомия с @eucliris\n\n"
         "Учебные материалы по разделам: тексты, фотографии препаратов и PDF. "
-        "Новые материалы постепенно появляются в приложении.\n\n"
-        f"{status}\n\n"
-        f"Доступ ко всем материалам — {settings.subscription_price:.2f} ₽ на {settings.subscription_days} дней.",
-        reply_markup=main_keyboard(),
+        "Новые материалы постепенно появляются в приложении."
     )
+    subscription_info = (
+        f"{status}\n\n"
+        f"Доступ ко всем материалам — {settings.subscription_price:.2f} ₽ на {settings.subscription_days} дней."
+    )
+    if show_quick_keyboard:
+        await message.answer(intro, reply_markup=main_keyboard())
+        await message.answer(subscription_info, reply_markup=quick_keyboard())
+    else:
+        await message.answer(f"{intro}\n\n{subscription_info}", reply_markup=main_keyboard())
 
 
 @dp.message(Command("id"))
